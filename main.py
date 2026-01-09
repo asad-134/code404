@@ -7,6 +7,7 @@ class CodeEditor:
         self.setup_window()
         self.create_menu_bar()
         self.create_toolbar()
+        self.create_main_container()
         
     def setup_window(self):
         """Initialize the main window"""
@@ -80,6 +81,21 @@ class CodeEditor:
         btn_run = tk.Button(toolbar, text="Run", command=self.run_code,
                            bg="#3d3d3d", fg="white", relief=tk.FLAT, padx=10)
         btn_run.pack(side=tk.LEFT, padx=2, pady=5)
+    
+    def create_main_container(self):
+        """Create the main container with resizable panes"""
+        # Create PanedWindow for resizable layout
+        self.paned_window = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, 
+                                           sashwidth=5, bg="#2d2d2d")
+        self.paned_window.pack(fill=tk.BOTH, expand=True)
+        
+        # Left pane for file explorer
+        self.left_pane = tk.Frame(self.paned_window, bg="#252526", width=250)
+        self.paned_window.add(self.left_pane, minsize=200)
+        
+        # Right pane for editor area
+        self.right_pane = tk.Frame(self.paned_window, bg="#1e1e1e")
+        self.paned_window.add(self.right_pane, minsize=400)
     
     # File menu placeholder functions
     def file_new(self):
