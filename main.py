@@ -6,6 +6,7 @@ class CodeEditor:
         self.root = root
         self.setup_window()
         self.create_menu_bar()
+        self.create_toolbar()
         
     def setup_window(self):
         """Initialize the main window"""
@@ -55,6 +56,31 @@ class CodeEditor:
         view_menu.add_command(label="Zoom In", command=self.view_zoom_in)
         view_menu.add_command(label="Zoom Out", command=self.view_zoom_out)
     
+    def create_toolbar(self):
+        """Create the toolbar"""
+        toolbar = tk.Frame(self.root, bg="#2d2d2d", height=40)
+        toolbar.pack(side=tk.TOP, fill=tk.X)
+        
+        # New file button
+        btn_new = tk.Button(toolbar, text="New", command=self.file_new, 
+                           bg="#3d3d3d", fg="white", relief=tk.FLAT, padx=10)
+        btn_new.pack(side=tk.LEFT, padx=2, pady=5)
+        
+        # Open file button
+        btn_open = tk.Button(toolbar, text="Open", command=self.file_open,
+                            bg="#3d3d3d", fg="white", relief=tk.FLAT, padx=10)
+        btn_open.pack(side=tk.LEFT, padx=2, pady=5)
+        
+        # Save button
+        btn_save = tk.Button(toolbar, text="Save", command=self.file_save,
+                            bg="#3d3d3d", fg="white", relief=tk.FLAT, padx=10)
+        btn_save.pack(side=tk.LEFT, padx=2, pady=5)
+        
+        # Run button
+        btn_run = tk.Button(toolbar, text="Run", command=self.run_code,
+                           bg="#3d3d3d", fg="white", relief=tk.FLAT, padx=10)
+        btn_run.pack(side=tk.LEFT, padx=2, pady=5)
+    
     # File menu placeholder functions
     def file_new(self):
         pass
@@ -98,6 +124,9 @@ class CodeEditor:
         pass
 
         
+    # Run button placeholder function
+    def run_code(self):
+        pass
 
 def main():
     root = tk.Tk()
