@@ -1,13 +1,16 @@
 import tkinter as tk
 from tkinter import ttk
+import os
 
 class CodeEditor:
     def __init__(self, root):
         self.root = root
+        self.sidebar_visible = True
         self.setup_window()
         self.create_menu_bar()
         self.create_toolbar()
         self.create_main_container()
+        self.create_file_explorer()
         
     def setup_window(self):
         """Initialize the main window"""
@@ -15,7 +18,7 @@ class CodeEditor:
         self.root.title("Code Editor")
         
         # Set window size
-        self.root.geometry("1200x800")
+        self.root.geometry("1200x700")
         
         # Set minimum dimensions
         self.root.minsize(800, 600)
@@ -97,6 +100,93 @@ class CodeEditor:
         self.right_pane = tk.Frame(self.paned_window, bg="#1e1e1e")
         self.paned_window.add(self.right_pane, minsize=400)
     
+    def create_file_explorer(self):
+        """Create the file explorer sidebar"""
+        # Title label
+        title_frame = tk.Frame(self.left_pane, bg="#252526")
+        title_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        title_label = tk.Label(title_frame, text="EXPLORER", 
+                              bg="#252526", fg="#cccccc", font=("Arial", 9, "bold"))
+        title_label.pack(side=tk.LEFT)
+        
+        # Create Treeview for file structure
+        tree_frame = tk.Frame(self.left_pane, bg="#252526")
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Scrollbar
+        scrollbar = tk.Scrollbar(tree_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Treeview widget
+        self.file_tree = ttk.Treeview(tree_frame, yscrollcommand=scrollbar.set)
+        self.file_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.file_tree.yview)
+        
+        # Configure Treeview style
+        style = ttk.Style()
+        style.configure("Treeview", background="#252526", 
+                       foreground="#cccccc", fieldbackground="#252526")
+        
+        # Bind events
+        self.file_tree.bind("<<TreeviewOpen>>", self.on_folder_expand)
+        self.file_tree.bind("<Double-1>", self.on_file_double_click)
+        
+        # Populate with current directory
+        self.populate_tree()
+    
+    def populate_tree(self, parent="", path=None):
+        """Populate the tree with files and folders"""
+        if path is None:
+            path = os.getcwd()
+            # Clear existing items
+            for item in self.file_tree.get_children():
+                self.file_tree.delete(item)
+            # Add root
+            node = self.file_tree.insert("", "end", text=path, values=[path], open=True)
+            parent = node
+        
+        try:
+            items = os.listdir(path)
+            # Sort: directories first, then files
+            items.sort(key=lambda x: (not os.path.isdir(os.path.join(path, x)), x.lower()))
+            
+            for item in items:
+                item_path = os.path.join(path, item)
+                if os.path.isdir(item_path):
+                    # Add folder with dummy child to make it expandable
+                    node = self.file_tree.insert(parent, "end", text=f"📁 {item}", 
+                                                 values=[item_path])
+                    self.file_tree.insert(node, "end", text="dummy")  # Dummy child
+                else:
+                    # Add file
+                    self.file_tree.insert(parent, "end", text=f"📄 {item}", 
+                                         values=[item_path])
+        except PermissionError:
+            pass
+    
+    def on_folder_expand(self, event):
+        """Handle folder expansion"""
+        item = self.file_tree.focus()
+        children = self.file_tree.get_children(item)
+        
+        # If only has dummy child, populate it
+        if len(children) == 1 and self.file_tree.item(children[0])["text"] == "dummy":
+            self.file_tree.delete(children[0])
+            path = self.file_tree.item(item)["values"][0]
+            self.populate_tree(item, path)
+    
+    def on_file_double_click(self, event):
+        """Handle file double-click to open"""
+        item = self.file_tree.focus()
+        if item:
+            values = self.file_tree.item(item)["values"]
+            if values:
+                path = values[0]
+                if os.path.isfile(path):
+                    # Placeholder for opening file
+                    print(f"Opening file: {path}")
+    
     # File menu placeholder functions
     def file_new(self):
         pass
@@ -131,7 +221,13 @@ class CodeEditor:
     
     # View menu placeholder functions
     def view_toggle_sidebar(self):
-        pass
+        """Toggle sidebar visibility"""
+        if self.sidebar_visible:
+            self.paned_window.forget(self.left_pane)
+            self.sidebar_visible = False
+        else:
+            self.paned_window.add(self.left_pane, before=self.right_pane, minsize=200)
+            self.sidebar_visible = True
     
     def view_zoom_in(self):
         pass
