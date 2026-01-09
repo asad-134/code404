@@ -9,12 +9,15 @@ class CodeEditor:
         self.sidebar_visible = True
         self.open_tabs = {}  # Track file paths for each tab
         self.untitled_count = 0
+        self.find_dialog = None
         self.setup_window()
         self.create_menu_bar()
         self.create_toolbar()
         self.create_main_container()
         self.create_file_explorer()
         self.create_notebook()
+        self.create_status_bar()
+        self.setup_keybindings()
         
     def setup_window(self):
         """Initialize the main window"""
@@ -49,12 +52,15 @@ class CodeEditor:
         # Edit menu
         edit_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Edit", menu=edit_menu)
-        edit_menu.add_command(label="Cut", command=self.edit_cut)
-        edit_menu.add_command(label="Copy", command=self.edit_copy)
-        edit_menu.add_command(label="Paste", command=self.edit_paste)
+        edit_menu.add_command(label="Cut", command=self.edit_cut, accelerator="Ctrl+X")
+        edit_menu.add_command(label="Copy", command=self.edit_copy, accelerator="Ctrl+C")
+        edit_menu.add_command(label="Paste", command=self.edit_paste, accelerator="Ctrl+V")
         edit_menu.add_separator()
-        edit_menu.add_command(label="Undo", command=self.edit_undo)
-        edit_menu.add_command(label="Redo", command=self.edit_redo)
+        edit_menu.add_command(label="Undo", command=self.edit_undo, accelerator="Ctrl+Z")
+        edit_menu.add_command(label="Redo", command=self.edit_redo, accelerator="Ctrl+Y")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Find", command=self.show_find_dialog, accelerator="Ctrl+F")
+        edit_menu.add_command(label="Replace", command=self.show_replace_dialog, accelerator="Ctrl+H")
         
         # View menu
         view_menu = tk.Menu(menubar, tearoff=0)
@@ -251,6 +257,10 @@ class CodeEditor:
         # Bind events for line numbers and syntax highlighting
         text_widget.bind("<<Modified>>", lambda e: self.on_text_modified(text_widget, line_numbers))
         text_widget.bind("<KeyRelease>", lambda e: self.apply_syntax_highlighting(text_widget))
+        
+        # Bind cursor movement events for status bar
+        text_widget.bind("<KeyRelease>", lambda e: self.update_status_bar(text_widget), add='+')
+        text_widget.bind("<ButtonRelease-1>", lambda e: self.update_status_bar(text_widget))
         
         # Add tab to notebook
         self.notebook.add(tab_frame, text=title)
@@ -561,6 +571,281 @@ class CodeEditor:
     
     def view_zoom_out(self):
         pass
+    
+    def setup_keybindings(self):
+        """Setup keyboard shortcuts"""
+        self.root.bind("<Control-n>", lambda e: self.file_new())
+        self.root.bind("<Control-o>", lambda e: self.file_open())
+        self.root.bind("<Control-s>", lambda e: self.file_save())
+        self.root.bind("<Control-Shift-S>", lambda e: self.file_save_as())
+        
+        self.root.bind("<Control-z>", lambda e: self.edit_undo())
+        self.root.bind("<Control-y>", lambda e: self.edit_redo())
+        self.root.bind("<Control-Shift-Z>", lambda e: self.edit_redo())
+        
+        self.root.bind("<Control-x>", lambda e: self.edit_cut())
+        self.root.bind("<Control-c>", lambda e: self.edit_copy())
+        self.root.bind("<Control-v>", lambda e: self.edit_paste())
+        
+        self.root.bind("<Control-f>", lambda e: self.show_find_dialog())
+        self.root.bind("<Control-h>", lambda e: self.show_replace_dialog())
+    
+    def create_status_bar(self):
+        """Create the status bar at the bottom"""
+        self.status_bar = tk.Frame(self.root, bg="#007acc", height=25)
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Left section: File path/status messages
+        self.status_left = tk.Label(self.status_bar, text="Ready", 
+                                     bg="#007acc", fg="white", anchor=tk.W, padx=10)
+        self.status_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Center section: File type
+        self.status_center = tk.Label(self.status_bar, text="Python", 
+                                       bg="#007acc", fg="white", padx=10)
+        self.status_center.pack(side=tk.LEFT)
+        
+        # Right section: Line and column numbers
+        self.status_right = tk.Label(self.status_bar, text="Ln 1, Col 1", 
+                                      bg="#007acc", fg="white", anchor=tk.E, padx=10)
+        self.status_right.pack(side=tk.RIGHT)
+    
+    def update_status_bar(self, text_widget):
+        """Update status bar with current cursor position"""
+        try:
+            # Get cursor position
+            cursor_pos = text_widget.index(tk.INSERT)
+            line, col = cursor_pos.split('.')
+            self.status_right.config(text=f"Ln {line}, Col {int(col) + 1}")
+            
+            # Update file path if available
+            tab_info = self.get_current_tab_info()
+            if tab_info:
+                file_path = tab_info.get('file_path', 'Untitled')
+                if file_path:
+                    self.status_left.config(text=file_path)
+                else:
+                    self.status_left.config(text=tab_info['title'])
+        except:
+            pass
+    
+    def show_find_dialog(self):
+        """Show find dialog"""
+        if self.find_dialog and self.find_dialog.winfo_exists():
+            self.find_dialog.lift()
+            return
+        
+        tab_info = self.get_current_tab_info()
+        if not tab_info:
+            return
+        
+        self.find_dialog = tk.Toplevel(self.root)
+        self.find_dialog.title("Find")
+        self.find_dialog.geometry("400x150")
+        self.find_dialog.resizable(False, False)
+        
+        # Find entry
+        tk.Label(self.find_dialog, text="Find:").grid(row=0, column=0, padx=10, pady=10, sticky=tk.W)
+        find_entry = tk.Entry(self.find_dialog, width=30)
+        find_entry.grid(row=0, column=1, padx=10, pady=10)
+        find_entry.focus()
+        
+        # Case sensitive checkbox
+        case_var = tk.BooleanVar()
+        case_check = tk.Checkbutton(self.find_dialog, text="Case sensitive", variable=case_var)
+        case_check.grid(row=1, column=1, sticky=tk.W, padx=10)
+        
+        # Buttons
+        btn_frame = tk.Frame(self.find_dialog)
+        btn_frame.grid(row=2, column=0, columnspan=2, pady=10)
+        
+        def find_next():
+            text_widget = tab_info['text_widget']
+            search_text = find_entry.get()
+            if not search_text:
+                return
+            
+            # Remove previous highlights
+            text_widget.tag_remove("search", "1.0", tk.END)
+            
+            # Get current cursor position
+            start_pos = text_widget.index(tk.INSERT)
+            
+            # Search for text
+            nocase = 0 if case_var.get() else 1
+            pos = text_widget.search(search_text, start_pos, tk.END, nocase=nocase)
+            
+            if pos:
+                # Highlight found text
+                end_pos = f"{pos}+{len(search_text)}c"
+                text_widget.tag_add("search", pos, end_pos)
+                text_widget.tag_config("search", background="yellow", foreground="black")
+                text_widget.mark_set(tk.INSERT, end_pos)
+                text_widget.see(pos)
+            else:
+                # Try from beginning
+                pos = text_widget.search(search_text, "1.0", tk.END, nocase=nocase)
+                if pos:
+                    end_pos = f"{pos}+{len(search_text)}c"
+                    text_widget.tag_add("search", pos, end_pos)
+                    text_widget.tag_config("search", background="yellow", foreground="black")
+                    text_widget.mark_set(tk.INSERT, end_pos)
+                    text_widget.see(pos)
+                else:
+                    messagebox.showinfo("Find", "No matches found")
+        
+        def find_prev():
+            text_widget = tab_info['text_widget']
+            search_text = find_entry.get()
+            if not search_text:
+                return
+            
+            # Remove previous highlights
+            text_widget.tag_remove("search", "1.0", tk.END)
+            
+            # Get current cursor position
+            start_pos = text_widget.index(tk.INSERT)
+            
+            # Search backwards
+            nocase = 0 if case_var.get() else 1
+            pos = text_widget.search(search_text, start_pos, "1.0", backwards=True, nocase=nocase)
+            
+            if pos:
+                # Highlight found text
+                end_pos = f"{pos}+{len(search_text)}c"
+                text_widget.tag_add("search", pos, end_pos)
+                text_widget.tag_config("search", background="yellow", foreground="black")
+                text_widget.mark_set(tk.INSERT, pos)
+                text_widget.see(pos)
+            else:
+                messagebox.showinfo("Find", "No matches found")
+        
+        tk.Button(btn_frame, text="Find Next", command=find_next, width=10).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Find Previous", command=find_prev, width=12).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Close", command=self.find_dialog.destroy, width=10).pack(side=tk.LEFT, padx=5)
+        
+        # Bind Enter key to find next
+        find_entry.bind("<Return>", lambda e: find_next())
+    
+    def show_replace_dialog(self):
+        """Show find and replace dialog"""
+        tab_info = self.get_current_tab_info()
+        if not tab_info:
+            return
+        
+        replace_dialog = tk.Toplevel(self.root)
+        replace_dialog.title("Find and Replace")
+        replace_dialog.geometry("400x200")
+        replace_dialog.resizable(False, False)
+        
+        # Find entry
+        tk.Label(replace_dialog, text="Find:").grid(row=0, column=0, padx=10, pady=10, sticky=tk.W)
+        find_entry = tk.Entry(replace_dialog, width=30)
+        find_entry.grid(row=0, column=1, padx=10, pady=10)
+        find_entry.focus()
+        
+        # Replace entry
+        tk.Label(replace_dialog, text="Replace:").grid(row=1, column=0, padx=10, pady=10, sticky=tk.W)
+        replace_entry = tk.Entry(replace_dialog, width=30)
+        replace_entry.grid(row=1, column=1, padx=10, pady=10)
+        
+        # Case sensitive checkbox
+        case_var = tk.BooleanVar()
+        case_check = tk.Checkbutton(replace_dialog, text="Case sensitive", variable=case_var)
+        case_check.grid(row=2, column=1, sticky=tk.W, padx=10)
+        
+        # Buttons
+        btn_frame = tk.Frame(replace_dialog)
+        btn_frame.grid(row=3, column=0, columnspan=2, pady=10)
+        
+        def find_next():
+            text_widget = tab_info['text_widget']
+            search_text = find_entry.get()
+            if not search_text:
+                return
+            
+            # Remove previous highlights
+            text_widget.tag_remove("search", "1.0", tk.END)
+            
+            # Get current cursor position
+            start_pos = text_widget.index(tk.INSERT)
+            
+            # Search for text
+            nocase = 0 if case_var.get() else 1
+            pos = text_widget.search(search_text, start_pos, tk.END, nocase=nocase)
+            
+            if pos:
+                # Highlight found text
+                end_pos = f"{pos}+{len(search_text)}c"
+                text_widget.tag_add("search", pos, end_pos)
+                text_widget.tag_config("search", background="yellow", foreground="black")
+                text_widget.mark_set(tk.INSERT, end_pos)
+                text_widget.see(pos)
+                return True
+            else:
+                # Try from beginning
+                pos = text_widget.search(search_text, "1.0", tk.END, nocase=nocase)
+                if pos:
+                    end_pos = f"{pos}+{len(search_text)}c"
+                    text_widget.tag_add("search", pos, end_pos)
+                    text_widget.tag_config("search", background="yellow", foreground="black")
+                    text_widget.mark_set(tk.INSERT, end_pos)
+                    text_widget.see(pos)
+                    return True
+                else:
+                    messagebox.showinfo("Find", "No matches found")
+                    return False
+        
+        def replace():
+            text_widget = tab_info['text_widget']
+            search_text = find_entry.get()
+            replace_text = replace_entry.get()
+            
+            # Check if current selection matches search text
+            try:
+                sel_text = text_widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+                if sel_text == search_text or (not case_var.get() and sel_text.lower() == search_text.lower()):
+                    text_widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                    text_widget.insert(tk.INSERT, replace_text)
+            except:
+                pass
+            
+            # Find next occurrence
+            find_next()
+        
+        def replace_all():
+            text_widget = tab_info['text_widget']
+            search_text = find_entry.get()
+            replace_text = replace_entry.get()
+            
+            if not search_text:
+                return
+            
+            count = 0
+            nocase = 0 if case_var.get() else 1
+            pos = "1.0"
+            
+            while True:
+                pos = text_widget.search(search_text, pos, tk.END, nocase=nocase)
+                if not pos:
+                    break
+                
+                end_pos = f"{pos}+{len(search_text)}c"
+                text_widget.delete(pos, end_pos)
+                text_widget.insert(pos, replace_text)
+                count += 1
+                pos = f"{pos}+{len(replace_text)}c"
+            
+            messagebox.showinfo("Replace All", f"Replaced {count} occurrence(s)")
+            replace_dialog.destroy()
+        
+        tk.Button(btn_frame, text="Find Next", command=find_next, width=10).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Replace", command=replace, width=10).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Replace All", command=replace_all, width=10).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Close", command=replace_dialog.destroy, width=10).pack(side=tk.LEFT, padx=5)
+        
+        # Bind Enter key to find next
+        find_entry.bind("<Return>", lambda e: find_next())
 
         
     # Run button placeholder function
