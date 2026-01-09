@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 import os
 import re
 
@@ -69,6 +69,12 @@ class CodeEditor:
         view_menu.add_separator()
         view_menu.add_command(label="Zoom In", command=self.view_zoom_in)
         view_menu.add_command(label="Zoom Out", command=self.view_zoom_out)
+        
+        # Help menu
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="Keyboard Shortcuts", command=self.show_shortcuts_help)
+        help_menu.add_command(label="About", command=self.show_about)
     
     def create_toolbar(self):
         """Create the toolbar"""
@@ -141,6 +147,7 @@ class CodeEditor:
         # Bind events
         self.file_tree.bind("<<TreeviewOpen>>", self.on_folder_expand)
         self.file_tree.bind("<Double-1>", self.on_file_double_click)
+        self.file_tree.bind("<Button-3>", self.show_file_context_menu)
         
         # Populate with current directory
         self.populate_tree()
@@ -197,13 +204,138 @@ class CodeEditor:
                     # Open file in editor
                     self.open_file(path)
     
+    def show_file_context_menu(self, event):
+        """Show context menu on right-click in file explorer"""
+        item = self.file_tree.identify_row(event.y)
+        if item:
+            self.file_tree.selection_set(item)
+            values = self.file_tree.item(item)["values"]
+            
+            if not values:
+                return
+            
+            path = values[0]
+            is_dir = os.path.isdir(path)
+            
+            # Create context menu
+            context_menu = tk.Menu(self.root, tearoff=0)
+            
+            if is_dir:
+                context_menu.add_command(label="New File", 
+                                        command=lambda: self.create_new_file_in_folder(path))
+                context_menu.add_command(label="New Folder", 
+                                        command=lambda: self.create_new_folder_in_folder(path))
+                context_menu.add_separator()
+            
+            context_menu.add_command(label="Rename", 
+                                    command=lambda: self.rename_file_or_folder(item, path))
+            context_menu.add_command(label="Delete", 
+                                    command=lambda: self.delete_file_or_folder(item, path))
+            context_menu.add_separator()
+            context_menu.add_command(label="Refresh", command=self.refresh_tree)
+            
+            context_menu.tk_popup(event.x_root, event.y_root)
+    
+    def create_new_file_in_folder(self, folder_path):
+        """Create a new file in the specified folder"""
+        file_name = tk.simpledialog.askstring("New File", "Enter file name:")
+        if file_name:
+            file_path = os.path.join(folder_path, file_name)
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write("")
+                self.refresh_tree()
+                self.open_file(file_path)
+                messagebox.showinfo("Success", f"File created: {file_name}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to create file: {str(e)}")
+    
+    def create_new_folder_in_folder(self, parent_path):
+        """Create a new folder in the specified folder"""
+        folder_name = tk.simpledialog.askstring("New Folder", "Enter folder name:")
+        if folder_name:
+            folder_path = os.path.join(parent_path, folder_name)
+            try:
+                os.makedirs(folder_path, exist_ok=True)
+                self.refresh_tree()
+                messagebox.showinfo("Success", f"Folder created: {folder_name}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to create folder: {str(e)}")
+    
+    def rename_file_or_folder(self, item, old_path):
+        """Rename a file or folder"""
+        old_name = os.path.basename(old_path)
+        new_name = tk.simpledialog.askstring("Rename", f"Rename '{old_name}' to:", 
+                                              initialvalue=old_name)
+        if new_name and new_name != old_name:
+            new_path = os.path.join(os.path.dirname(old_path), new_name)
+            try:
+                os.rename(old_path, new_path)
+                self.refresh_tree()
+                
+                # Update open tabs if file was renamed
+                for tab_info in self.open_tabs.values():
+                    if tab_info['file_path'] == old_path:
+                        tab_info['file_path'] = new_path
+                        tab_info['title'] = new_name
+                
+                messagebox.showinfo("Success", f"Renamed to: {new_name}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to rename: {str(e)}")
+    
+    def delete_file_or_folder(self, item, path):
+        """Delete a file or folder"""
+        name = os.path.basename(path)
+        is_dir = os.path.isdir(path)
+        
+        response = messagebox.askyesno("Delete", 
+                                       f"Are you sure you want to delete '{name}'?")
+        if response:
+            try:
+                if is_dir:
+                    import shutil
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+                
+                self.refresh_tree()
+                
+                # Close tabs for deleted files
+                tabs_to_close = []
+                for tab_id, tab_info in self.open_tabs.items():
+                    if tab_info['file_path'] == path:
+                        tabs_to_close.append(tab_id)
+                
+                for tab_id in tabs_to_close:
+                    for i, tab in enumerate(self.notebook.tabs()):
+                        if str(self.notebook.nametowidget(tab)) == tab_id:
+                            self.close_tab(i)
+                            break
+                
+                messagebox.showinfo("Success", f"Deleted: {name}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to delete: {str(e)}")
+    
+    def refresh_tree(self):
+        """Refresh the file tree"""
+        self.populate_tree()
+    
     def create_notebook(self):
         """Create the tabbed notebook for editor"""
         self.notebook = ttk.Notebook(self.right_pane)
         self.notebook.pack(fill=tk.BOTH, expand=True)
         
-        # Bind tab close event (middle-click or button)
+        # Bind tab close events
         self.notebook.bind("<Button-3>", self.on_tab_right_click)
+        self.notebook.bind("<Button-2>", self.on_tab_middle_click)  # Middle-click to close
+    
+    def on_tab_middle_click(self, event):
+        """Handle middle-click on tab to close"""
+        try:
+            clicked_tab = self.notebook.index(f"@{event.x},{event.y}")
+            self.close_tab(clicked_tab)
+        except:
+            pass
     
     def create_editor_tab(self, title="Untitled", content="", file_path=None):
         """Create a new editor tab with text widget and line numbers"""
@@ -578,6 +710,7 @@ class CodeEditor:
         self.root.bind("<Control-o>", lambda e: self.file_open())
         self.root.bind("<Control-s>", lambda e: self.file_save())
         self.root.bind("<Control-Shift-S>", lambda e: self.file_save_as())
+        self.root.bind("<Control-w>", lambda e: self.close_current_tab())
         
         self.root.bind("<Control-z>", lambda e: self.edit_undo())
         self.root.bind("<Control-y>", lambda e: self.edit_redo())
@@ -589,6 +722,40 @@ class CodeEditor:
         
         self.root.bind("<Control-f>", lambda e: self.show_find_dialog())
         self.root.bind("<Control-h>", lambda e: self.show_replace_dialog())
+        
+        # Tab switching
+        self.root.bind("<Control-Tab>", lambda e: self.next_tab())
+        self.root.bind("<Control-Shift-Tab>", lambda e: self.prev_tab())
+    
+    def close_current_tab(self):
+        """Close the currently selected tab"""
+        try:
+            current = self.notebook.index(self.notebook.select())
+            self.close_tab(current)
+        except:
+            pass
+    
+    def next_tab(self):
+        """Switch to next tab"""
+        try:
+            current = self.notebook.index(self.notebook.select())
+            total = self.notebook.index('end')
+            if total > 0:
+                next_tab = (current + 1) % total
+                self.notebook.select(next_tab)
+        except:
+            pass
+    
+    def prev_tab(self):
+        """Switch to previous tab"""
+        try:
+            current = self.notebook.index(self.notebook.select())
+            total = self.notebook.index('end')
+            if total > 0:
+                prev_tab = (current - 1) % total
+                self.notebook.select(prev_tab)
+        except:
+            pass
     
     def create_status_bar(self):
         """Create the status bar at the bottom"""
@@ -851,6 +1018,90 @@ class CodeEditor:
     # Run button placeholder function
     def run_code(self):
         pass
+    
+    def show_shortcuts_help(self):
+        """Show keyboard shortcuts help dialog"""
+        help_window = tk.Toplevel(self.root)
+        help_window.title("Keyboard Shortcuts")
+        help_window.geometry("500x600")
+        help_window.resizable(False, False)
+        
+        # Create text widget with scrollbar
+        text_frame = tk.Frame(help_window)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        scrollbar = tk.Scrollbar(text_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        text = tk.Text(text_frame, wrap=tk.WORD, yscrollcommand=scrollbar.set,
+                       font=("Arial", 10), bg="#f0f0f0", padx=10, pady=10)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=text.yview)
+        
+        shortcuts = """KEYBOARD SHORTCUTS
+
+FILE OPERATIONS
+Ctrl+N         New File
+Ctrl+O         Open File
+Ctrl+S         Save File
+Ctrl+Shift+S   Save As
+Ctrl+W         Close Tab
+
+EDITING
+Ctrl+Z         Undo
+Ctrl+Y         Redo
+Ctrl+Shift+Z   Redo
+Ctrl+X         Cut
+Ctrl+C         Copy
+Ctrl+V         Paste
+
+SEARCH
+Ctrl+F         Find
+Ctrl+H         Find and Replace
+
+NAVIGATION
+Ctrl+Tab       Next Tab
+Ctrl+Shift+Tab Previous Tab
+
+VIEW
+(Menu) Toggle Sidebar
+(Menu) Zoom In
+(Menu) Zoom Out
+
+FILE EXPLORER
+Double-click   Open File
+Right-click    Context Menu
+  - New File
+  - New Folder
+  - Rename
+  - Delete
+  - Refresh
+
+TAB CLOSING
+Right-click    Close Tab
+Middle-click   Close Tab
+Ctrl+W         Close Current Tab
+"""
+        
+        text.insert("1.0", shortcuts)
+        text.config(state='disabled')
+        
+        # Close button
+        tk.Button(help_window, text="Close", command=help_window.destroy,
+                 width=10).pack(pady=10)
+    
+    def show_about(self):
+        """Show about dialog"""
+        messagebox.showinfo("About Code Editor",
+                           "Code Editor v1.0\n\n"
+                           "A VS Code-inspired text editor built with Tkinter\n\n"
+                           "Features:\n"
+                           "• Syntax highlighting for Python\n"
+                           "• File explorer with context menu\n"
+                           "• Find and replace\n"
+                           "• Line numbers\n"
+                           "• Multiple tabs\n"
+                           "• Status bar\n")
 
 def main():
     root = tk.Tk()
