@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 import os
 import re
+import json
 
 class CodeEditor:
     def __init__(self, root):
@@ -10,6 +11,48 @@ class CodeEditor:
         self.open_tabs = {}  # Track file paths for each tab
         self.untitled_count = 0
         self.find_dialog = None
+        
+        # Define themes
+        self.themes = {
+            'dark': {
+                'bg': '#1e1e1e',
+                'fg': '#d4d4d4',
+                'sidebar_bg': '#252526',
+                'toolbar_bg': '#2d2d2d',
+                'button_bg': '#3d3d3d',
+                'status_bg': '#007acc',
+                'line_num_bg': '#1e1e1e',
+                'line_num_fg': '#858585',
+                'select_bg': '#264f78',
+                'insert_bg': 'white',
+                'keyword': '#569cd6',
+                'string': '#ce9178',
+                'comment': '#6a9955',
+                'number': '#b5cea8',
+                'function': '#dcdcaa'
+            },
+            'light': {
+                'bg': '#ffffff',
+                'fg': '#000000',
+                'sidebar_bg': '#f3f3f3',
+                'toolbar_bg': '#e0e0e0',
+                'button_bg': '#d0d0d0',
+                'status_bg': '#0078d4',
+                'line_num_bg': '#f0f0f0',
+                'line_num_fg': '#6e6e6e',
+                'select_bg': '#add6ff',
+                'insert_bg': 'black',
+                'keyword': '#0000ff',
+                'string': '#a31515',
+                'comment': '#008000',
+                'number': '#098658',
+                'function': '#795e26'
+            }
+        }
+        
+        # Load settings
+        self.load_settings()
+        
         self.setup_window()
         self.create_menu_bar()
         self.create_toolbar()
@@ -18,6 +61,40 @@ class CodeEditor:
         self.create_notebook()
         self.create_status_bar()
         self.setup_keybindings()
+        
+    def load_settings(self):
+        """Load settings from config file"""
+        self.config_file = os.path.join(os.path.dirname(__file__), 'editor_config.json')
+        default_settings = {
+            'theme': 'dark',
+            'font_family': 'Consolas',
+            'font_size': 11,
+            'tab_width': 4,
+            'auto_save_interval': 0  # 0 = disabled
+        }
+        
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r') as f:
+                    self.settings = json.load(f)
+                # Ensure all default keys exist
+                for key, value in default_settings.items():
+                    if key not in self.settings:
+                        self.settings[key] = value
+            else:
+                self.settings = default_settings
+        except:
+            self.settings = default_settings
+        
+        self.current_theme = self.settings.get('theme', 'dark')
+    
+    def save_settings(self):
+        """Save settings to config file"""
+        try:
+            with open(self.config_file, 'w') as f:
+                json.dump(self.settings, f, indent=4)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save settings: {str(e)}")
         
     def setup_window(self):
         """Initialize the main window"""
@@ -67,8 +144,13 @@ class CodeEditor:
         menubar.add_cascade(label="View", menu=view_menu)
         view_menu.add_command(label="Toggle Sidebar", command=self.view_toggle_sidebar)
         view_menu.add_separator()
+        view_menu.add_command(label="Dark Theme", command=lambda: self.apply_theme('dark'))
+        view_menu.add_command(label="Light Theme", command=lambda: self.apply_theme('light'))
+        view_menu.add_separator()
         view_menu.add_command(label="Zoom In", command=self.view_zoom_in)
         view_menu.add_command(label="Zoom Out", command=self.view_zoom_out)
+        view_menu.add_separator()
+        view_menu.add_command(label="Settings", command=self.show_settings_dialog)
         
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -78,28 +160,29 @@ class CodeEditor:
     
     def create_toolbar(self):
         """Create the toolbar"""
-        toolbar = tk.Frame(self.root, bg="#2d2d2d", height=40)
-        toolbar.pack(side=tk.TOP, fill=tk.X)
+        theme = self.themes[self.current_theme]
+        self.toolbar = tk.Frame(self.root, bg=theme['toolbar_bg'], height=40)
+        self.toolbar.pack(side=tk.TOP, fill=tk.X)
         
         # New file button
-        btn_new = tk.Button(toolbar, text="New", command=self.file_new, 
-                           bg="#3d3d3d", fg="white", relief=tk.FLAT, padx=10)
-        btn_new.pack(side=tk.LEFT, padx=2, pady=5)
+        self.btn_new = tk.Button(self.toolbar, text="New", command=self.file_new, 
+                           bg=theme['button_bg'], fg=theme['fg'], relief=tk.FLAT, padx=10)
+        self.btn_new.pack(side=tk.LEFT, padx=2, pady=5)
         
         # Open file button
-        btn_open = tk.Button(toolbar, text="Open", command=self.file_open,
-                            bg="#3d3d3d", fg="white", relief=tk.FLAT, padx=10)
-        btn_open.pack(side=tk.LEFT, padx=2, pady=5)
+        self.btn_open = tk.Button(self.toolbar, text="Open", command=self.file_open,
+                            bg=theme['button_bg'], fg=theme['fg'], relief=tk.FLAT, padx=10)
+        self.btn_open.pack(side=tk.LEFT, padx=2, pady=5)
         
         # Save button
-        btn_save = tk.Button(toolbar, text="Save", command=self.file_save,
-                            bg="#3d3d3d", fg="white", relief=tk.FLAT, padx=10)
-        btn_save.pack(side=tk.LEFT, padx=2, pady=5)
+        self.btn_save = tk.Button(self.toolbar, text="Save", command=self.file_save,
+                            bg=theme['button_bg'], fg=theme['fg'], relief=tk.FLAT, padx=10)
+        self.btn_save.pack(side=tk.LEFT, padx=2, pady=5)
         
         # Run button
-        btn_run = tk.Button(toolbar, text="Run", command=self.run_code,
-                           bg="#3d3d3d", fg="white", relief=tk.FLAT, padx=10)
-        btn_run.pack(side=tk.LEFT, padx=2, pady=5)
+        self.btn_run = tk.Button(self.toolbar, text="Run", command=self.run_code,
+                           bg=theme['button_bg'], fg=theme['fg'], relief=tk.FLAT, padx=10)
+        self.btn_run.pack(side=tk.LEFT, padx=2, pady=5)
     
     def create_main_container(self):
         """Create the main container with resizable panes"""
@@ -339,22 +422,25 @@ class CodeEditor:
     
     def create_editor_tab(self, title="Untitled", content="", file_path=None):
         """Create a new editor tab with text widget and line numbers"""
+        theme = self.themes[self.current_theme]
+        font = (self.settings['font_family'], self.settings['font_size'])
+        
         # Create frame for this tab
-        tab_frame = tk.Frame(self.notebook, bg="#1e1e1e")
+        tab_frame = tk.Frame(self.notebook, bg=theme['bg'])
         
         # Create frame for line numbers and text widget
-        editor_frame = tk.Frame(tab_frame, bg="#1e1e1e")
+        editor_frame = tk.Frame(tab_frame, bg=theme['bg'])
         editor_frame.pack(fill=tk.BOTH, expand=True)
         
         # Line numbers widget
         line_numbers = tk.Text(editor_frame, width=4, padx=5, pady=5,
-                               bg="#1e1e1e", fg="#858585", 
-                               font=("Consolas", 11), state='disabled',
+                               bg=theme['line_num_bg'], fg=theme['line_num_fg'], 
+                               font=font, state='disabled',
                                takefocus=0, bd=0, highlightthickness=0)
         line_numbers.pack(side=tk.LEFT, fill=tk.Y)
         
         # Create text widget with scrollbars
-        text_frame = tk.Frame(editor_frame, bg="#1e1e1e")
+        text_frame = tk.Frame(editor_frame, bg=theme['bg'])
         text_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         # Vertical scrollbar
@@ -368,12 +454,12 @@ class CodeEditor:
         # Text widget
         text_widget = tk.Text(text_frame, wrap=tk.NONE,
                              undo=True, maxundo=-1,
-                             bg="#1e1e1e", fg="#d4d4d4",
-                             insertbackground="white",
-                             font=("Consolas", 11),
+                             bg=theme['bg'], fg=theme['fg'],
+                             insertbackground=theme['insert_bg'],
+                             font=font,
                              yscrollcommand=v_scrollbar.set,
                              xscrollcommand=h_scrollbar.set,
-                             selectbackground="#264f78",
+                             selectbackground=theme['select_bg'],
                              bd=0, padx=5, pady=5)
         text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
@@ -444,11 +530,12 @@ class CodeEditor:
     
     def configure_syntax_tags(self, text_widget):
         """Configure syntax highlighting tags"""
-        text_widget.tag_configure("keyword", foreground="#569cd6")
-        text_widget.tag_configure("string", foreground="#ce9178")
-        text_widget.tag_configure("comment", foreground="#6a9955")
-        text_widget.tag_configure("number", foreground="#b5cea8")
-        text_widget.tag_configure("function", foreground="#dcdcaa")
+        theme = self.themes[self.current_theme]
+        text_widget.tag_configure("keyword", foreground=theme['keyword'])
+        text_widget.tag_configure("string", foreground=theme['string'])
+        text_widget.tag_configure("comment", foreground=theme['comment'])
+        text_widget.tag_configure("number", foreground=theme['number'])
+        text_widget.tag_configure("function", foreground=theme['function'])
     
     def apply_syntax_highlighting(self, text_widget):
         """Apply syntax highlighting for Python"""
@@ -759,22 +846,23 @@ class CodeEditor:
     
     def create_status_bar(self):
         """Create the status bar at the bottom"""
-        self.status_bar = tk.Frame(self.root, bg="#007acc", height=25)
+        theme = self.themes[self.current_theme]
+        self.status_bar = tk.Frame(self.root, bg=theme['status_bg'], height=25)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         
         # Left section: File path/status messages
         self.status_left = tk.Label(self.status_bar, text="Ready", 
-                                     bg="#007acc", fg="white", anchor=tk.W, padx=10)
+                                     bg=theme['status_bg'], fg="white", anchor=tk.W, padx=10)
         self.status_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
         # Center section: File type
         self.status_center = tk.Label(self.status_bar, text="Python", 
-                                       bg="#007acc", fg="white", padx=10)
+                                       bg=theme['status_bg'], fg="white", padx=10)
         self.status_center.pack(side=tk.LEFT)
         
         # Right section: Line and column numbers
         self.status_right = tk.Label(self.status_bar, text="Ln 1, Col 1", 
-                                      bg="#007acc", fg="white", anchor=tk.E, padx=10)
+                                      bg=theme['status_bg'], fg="white", anchor=tk.E, padx=10)
         self.status_right.pack(side=tk.RIGHT)
     
     def update_status_bar(self, text_widget):
@@ -1013,6 +1101,144 @@ class CodeEditor:
         
         # Bind Enter key to find next
         find_entry.bind("<Return>", lambda e: find_next())
+    
+    def apply_theme(self, theme_name):
+        """Apply a theme to the editor"""
+        if theme_name not in self.themes:
+            return
+        
+        self.current_theme = theme_name
+        self.settings['theme'] = theme_name
+        self.save_settings()
+        
+        theme = self.themes[theme_name]
+        
+        # Update toolbar
+        self.toolbar.config(bg=theme['toolbar_bg'])
+        for widget in [self.btn_new, self.btn_open, self.btn_save, self.btn_run]:
+            widget.config(bg=theme['button_bg'], fg=theme['fg'])
+        
+        # Update paned window
+        self.paned_window.config(bg=theme['toolbar_bg'])
+        self.left_pane.config(bg=theme['sidebar_bg'])
+        self.right_pane.config(bg=theme['bg'])
+        
+        # Update status bar
+        self.status_bar.config(bg=theme['status_bg'])
+        self.status_left.config(bg=theme['status_bg'], fg='white')
+        self.status_center.config(bg=theme['status_bg'], fg='white')
+        self.status_right.config(bg=theme['status_bg'], fg='white')
+        
+        # Update all open tabs
+        for tab_info in self.open_tabs.values():
+            text_widget = tab_info['text_widget']
+            line_numbers = tab_info['line_numbers']
+            
+            # Update text widget
+            text_widget.config(
+                bg=theme['bg'],
+                fg=theme['fg'],
+                insertbackground=theme['insert_bg'],
+                selectbackground=theme['select_bg']
+            )
+            
+            # Update line numbers
+            line_numbers.config(
+                bg=theme['line_num_bg'],
+                fg=theme['line_num_fg']
+            )
+            
+            # Reconfigure syntax tags
+            self.configure_syntax_tags(text_widget)
+            
+            # Reapply syntax highlighting
+            self.apply_syntax_highlighting(text_widget)
+        
+        messagebox.showinfo("Theme Changed", f"{theme_name.capitalize()} theme applied!")
+    
+    def show_settings_dialog(self):
+        """Show settings/preferences dialog"""
+        settings_window = tk.Toplevel(self.root)
+        settings_window.title("Settings")
+        settings_window.geometry("500x400")
+        settings_window.resizable(False, False)
+        
+        # Main frame
+        main_frame = tk.Frame(settings_window, padx=20, pady=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Font family
+        tk.Label(main_frame, text="Font Family:", font=("Arial", 10, "bold")).grid(row=0, column=0, sticky=tk.W, pady=10)
+        font_var = tk.StringVar(value=self.settings['font_family'])
+        font_options = ['Consolas', 'Courier New', 'Monaco', 'Lucida Console', 'DejaVu Sans Mono']
+        font_dropdown = ttk.Combobox(main_frame, textvariable=font_var, values=font_options, state='readonly', width=30)
+        font_dropdown.grid(row=0, column=1, pady=10, padx=10)
+        
+        # Font size
+        tk.Label(main_frame, text="Font Size:", font=("Arial", 10, "bold")).grid(row=1, column=0, sticky=tk.W, pady=10)
+        size_var = tk.IntVar(value=self.settings['font_size'])
+        size_spinbox = tk.Spinbox(main_frame, from_=8, to=24, textvariable=size_var, width=30)
+        size_spinbox.grid(row=1, column=1, pady=10, padx=10)
+        
+        # Tab width
+        tk.Label(main_frame, text="Tab Width (spaces):", font=("Arial", 10, "bold")).grid(row=2, column=0, sticky=tk.W, pady=10)
+        tab_var = tk.IntVar(value=self.settings['tab_width'])
+        tab_spinbox = tk.Spinbox(main_frame, from_=2, to=8, textvariable=tab_var, width=30)
+        tab_spinbox.grid(row=2, column=1, pady=10, padx=10)
+        
+        # Theme
+        tk.Label(main_frame, text="Theme:", font=("Arial", 10, "bold")).grid(row=3, column=0, sticky=tk.W, pady=10)
+        theme_var = tk.StringVar(value=self.settings['theme'])
+        theme_dropdown = ttk.Combobox(main_frame, textvariable=theme_var, values=['dark', 'light'], state='readonly', width=30)
+        theme_dropdown.grid(row=3, column=1, pady=10, padx=10)
+        
+        # Auto-save interval
+        tk.Label(main_frame, text="Auto-save Interval (sec):", font=("Arial", 10, "bold")).grid(row=4, column=0, sticky=tk.W, pady=10)
+        tk.Label(main_frame, text="(0 = disabled)", font=("Arial", 8)).grid(row=5, column=0, sticky=tk.W)
+        autosave_var = tk.IntVar(value=self.settings['auto_save_interval'])
+        autosave_spinbox = tk.Spinbox(main_frame, from_=0, to=600, textvariable=autosave_var, width=30, increment=30)
+        autosave_spinbox.grid(row=4, column=1, pady=10, padx=10)
+        
+        # Buttons
+        btn_frame = tk.Frame(main_frame)
+        btn_frame.grid(row=6, column=0, columnspan=2, pady=20)
+        
+        def save_settings():
+            # Update settings
+            self.settings['font_family'] = font_var.get()
+            self.settings['font_size'] = size_var.get()
+            self.settings['tab_width'] = tab_var.get()
+            self.settings['theme'] = theme_var.get()
+            self.settings['auto_save_interval'] = autosave_var.get()
+            
+            # Save to file
+            self.save_settings()
+            
+            # Apply theme if changed
+            if self.current_theme != theme_var.get():
+                self.apply_theme(theme_var.get())
+            
+            # Update font in all open tabs
+            for tab_info in self.open_tabs.values():
+                text_widget = tab_info['text_widget']
+                line_numbers = tab_info['line_numbers']
+                font = (self.settings['font_family'], self.settings['font_size'])
+                text_widget.config(font=font)
+                line_numbers.config(font=font)
+            
+            messagebox.showinfo("Settings", "Settings saved successfully!")
+            settings_window.destroy()
+        
+        def reset_defaults():
+            font_var.set('Consolas')
+            size_var.set(11)
+            tab_var.set(4)
+            theme_var.set('dark')
+            autosave_var.set(0)
+        
+        tk.Button(btn_frame, text="Save", command=save_settings, width=12, bg="#0078d4", fg="white").pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Reset Defaults", command=reset_defaults, width=12).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Cancel", command=settings_window.destroy, width=12).pack(side=tk.LEFT, padx=5)
 
         
     # Run button placeholder function
