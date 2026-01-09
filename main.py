@@ -3,6 +3,9 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 import os
 import re
 import json
+import subprocess
+import threading
+import sys
 
 class CodeEditor:
     def __init__(self, root):
@@ -143,6 +146,7 @@ class CodeEditor:
         view_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="View", menu=view_menu)
         view_menu.add_command(label="Toggle Sidebar", command=self.view_toggle_sidebar)
+        view_menu.add_command(label="Toggle Terminal", command=self.view_toggle_terminal)
         view_menu.add_separator()
         view_menu.add_command(label="Dark Theme", command=lambda: self.apply_theme('dark'))
         view_menu.add_command(label="Light Theme", command=lambda: self.apply_theme('light'))
@@ -151,6 +155,8 @@ class CodeEditor:
         view_menu.add_command(label="Zoom Out", command=self.view_zoom_out)
         view_menu.add_separator()
         view_menu.add_command(label="Settings", command=self.show_settings_dialog)
+        view_menu.add_separator()
+        view_menu.add_command(label="Run Code", command=self.run_code, accelerator="F5")
         
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -195,9 +201,70 @@ class CodeEditor:
         self.left_pane = tk.Frame(self.paned_window, bg="#252526", width=250)
         self.paned_window.add(self.left_pane, minsize=200)
         
-        # Right pane for editor area
+        # Right pane - split into editor and terminal
         self.right_pane = tk.Frame(self.paned_window, bg="#1e1e1e")
         self.paned_window.add(self.right_pane, minsize=400)
+        
+        # Create vertical paned window for editor and terminal
+        self.editor_terminal_pane = tk.PanedWindow(self.right_pane, orient=tk.VERTICAL,
+                                                    sashwidth=5, bg="#2d2d2d")
+        self.editor_terminal_pane.pack(fill=tk.BOTH, expand=True)
+        
+        # Editor container
+        self.editor_container = tk.Frame(self.editor_terminal_pane, bg="#1e1e1e")
+        self.editor_terminal_pane.add(self.editor_container, minsize=300)
+        
+        # Terminal container
+        self.terminal_container = tk.Frame(self.editor_terminal_pane, bg="#1e1e1e", height=200)
+        self.editor_terminal_pane.add(self.terminal_container, minsize=100)
+        
+        # Create terminal widget
+        self.create_terminal()
+    
+    def create_terminal(self):
+        """Create the integrated terminal"""
+        theme = self.themes[self.current_theme]
+        
+        # Terminal title bar
+        terminal_title = tk.Frame(self.terminal_container, bg=theme['toolbar_bg'], height=25)
+        terminal_title.pack(side=tk.TOP, fill=tk.X)
+        
+        tk.Label(terminal_title, text="TERMINAL", bg=theme['toolbar_bg'], 
+                fg=theme['fg'], font=("Arial", 9, "bold"), padx=10).pack(side=tk.LEFT)
+        
+        # Clear button
+        clear_btn = tk.Button(terminal_title, text="Clear", command=self.clear_terminal,
+                             bg=theme['button_bg'], fg=theme['fg'], relief=tk.FLAT, padx=8)
+        clear_btn.pack(side=tk.RIGHT, padx=5, pady=2)
+        
+        # Terminal text widget
+        terminal_frame = tk.Frame(self.terminal_container, bg=theme['bg'])
+        terminal_frame.pack(fill=tk.BOTH, expand=True)
+        
+        scrollbar = tk.Scrollbar(terminal_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.terminal_output = tk.Text(terminal_frame, 
+                                        bg="#000000", fg="#00ff00",
+                                        font=("Consolas", 10),
+                                        yscrollcommand=scrollbar.set,
+                                        state='disabled',
+                                        wrap=tk.WORD)
+        self.terminal_output.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.terminal_output.yview)
+    
+    def clear_terminal(self):
+        """Clear terminal output"""
+        self.terminal_output.config(state='normal')
+        self.terminal_output.delete("1.0", tk.END)
+        self.terminal_output.config(state='disabled')
+    
+    def append_terminal_output(self, text, color="#00ff00"):
+        """Append text to terminal output"""
+        self.terminal_output.config(state='normal')
+        self.terminal_output.insert(tk.END, text)
+        self.terminal_output.see(tk.END)
+        self.terminal_output.config(state='disabled')
     
     def create_file_explorer(self):
         """Create the file explorer sidebar"""
@@ -405,7 +472,7 @@ class CodeEditor:
     
     def create_notebook(self):
         """Create the tabbed notebook for editor"""
-        self.notebook = ttk.Notebook(self.right_pane)
+        self.notebook = ttk.Notebook(self.editor_container)
         self.notebook.pack(fill=tk.BOTH, expand=True)
         
         # Bind tab close events
@@ -785,6 +852,16 @@ class CodeEditor:
             self.paned_window.add(self.left_pane, before=self.right_pane, minsize=200)
             self.sidebar_visible = True
     
+    def view_toggle_terminal(self):
+        """Toggle terminal visibility"""
+        try:
+            if self.terminal_container.winfo_ismapped():
+                self.editor_terminal_pane.forget(self.terminal_container)
+            else:
+                self.editor_terminal_pane.add(self.terminal_container, minsize=100)
+        except:
+            pass
+    
     def view_zoom_in(self):
         pass
     
@@ -806,6 +883,8 @@ class CodeEditor:
         self.root.bind("<Control-x>", lambda e: self.edit_cut())
         self.root.bind("<Control-c>", lambda e: self.edit_copy())
         self.root.bind("<Control-v>", lambda e: self.edit_paste())
+        
+        self.root.bind("<F5>", lambda e: self.run_code())
         
         self.root.bind("<Control-f>", lambda e: self.show_find_dialog())
         self.root.bind("<Control-h>", lambda e: self.show_replace_dialog())
@@ -1241,9 +1320,96 @@ class CodeEditor:
         tk.Button(btn_frame, text="Cancel", command=settings_window.destroy, width=12).pack(side=tk.LEFT, padx=5)
 
         
-    # Run button placeholder function
+    # Run code function
     def run_code(self):
-        pass
+        """Run the current Python file"""
+        tab_info = self.get_current_tab_info()
+        if not tab_info:
+            messagebox.showwarning("No File", "No file is currently open to run.")
+            return
+        
+        file_path = tab_info.get('file_path')
+        
+        # If file is not saved, prompt to save
+        if not file_path or tab_info.get('modified', False):
+            response = messagebox.askyesno("Save File", 
+                                          "File must be saved before running. Save now?")
+            if response:
+                self.file_save()
+                # Update file_path after save
+                tab_info = self.get_current_tab_info()
+                file_path = tab_info.get('file_path')
+                if not file_path:
+                    return
+            else:
+                return
+        
+        # Check if it's a Python file
+        if not file_path.endswith('.py'):
+            messagebox.showwarning("Not a Python File", 
+                                  "Only Python (.py) files can be run.")
+            return
+        
+        # Clear terminal
+        self.clear_terminal()
+        
+        # Add run command to terminal
+        self.append_terminal_output(f"Running: {file_path}\n")
+        self.append_terminal_output("=" * 60 + "\n")
+        
+        # Run in a separate thread to avoid blocking UI
+        thread = threading.Thread(target=self.execute_python_file, args=(file_path,))
+        thread.daemon = True
+        thread.start()
+    
+    def execute_python_file(self, file_path):
+        """Execute a Python file and capture output"""
+        try:
+            # Get the directory of the file
+            file_dir = os.path.dirname(file_path)
+            
+            # Run the Python file
+            process = subprocess.Popen(
+                [sys.executable, file_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.PIPE,
+                cwd=file_dir,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            # Read output in real-time
+            def read_output(pipe, prefix=""):
+                for line in iter(pipe.readline, ''):
+                    if line:
+                        self.root.after(0, self.append_terminal_output, prefix + line)
+            
+            # Read stdout and stderr
+            stdout_thread = threading.Thread(target=read_output, args=(process.stdout,))
+            stderr_thread = threading.Thread(target=read_output, args=(process.stderr, "[ERROR] "))
+            
+            stdout_thread.daemon = True
+            stderr_thread.daemon = True
+            
+            stdout_thread.start()
+            stderr_thread.start()
+            
+            # Wait for process to complete
+            process.wait()
+            stdout_thread.join()
+            stderr_thread.join()
+            
+            # Show completion message
+            self.root.after(0, self.append_terminal_output, 
+                          f"\n{'=' * 60}\n")
+            self.root.after(0, self.append_terminal_output, 
+                          f"Process finished with exit code {process.returncode}\n")
+            
+        except Exception as e:
+            self.root.after(0, self.append_terminal_output, 
+                          f"\n[ERROR] Failed to run file: {str(e)}\n")
     
     def show_shortcuts_help(self):
         """Show keyboard shortcuts help dialog"""
