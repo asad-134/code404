@@ -269,35 +269,42 @@ class CodeEditor:
     def create_file_explorer(self):
         """Create the file explorer sidebar"""
         # Title label
-        title_frame = tk.Frame(self.left_pane, bg="#252526")
+        title_frame = tk.Frame(self.left_pane, bg="#1e1e1e")
         title_frame.pack(fill=tk.X, padx=5, pady=5)
         
         title_label = tk.Label(title_frame, text="EXPLORER", 
-                              bg="#252526", fg="#cccccc", font=("Arial", 9, "bold"))
+                              bg="#1e1e1e", fg="#cccccc", font=("Arial", 9, "bold"))
         title_label.pack(side=tk.LEFT)
         
         # Create Treeview for file structure
-        tree_frame = tk.Frame(self.left_pane, bg="#252526")
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        tree_frame = tk.Frame(self.left_pane, bg="#1e1e1e")
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
         
-        # Scrollbar
-        scrollbar = tk.Scrollbar(tree_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        # Configure Treeview style BEFORE creating the widget
+        style = ttk.Style()
+        style.theme_use('clam')  # Use clam theme for better customization
+        style.configure("Treeview", 
+                       background="#1e1e1e", 
+                       foreground="#cccccc", 
+                       fieldbackground="#1e1e1e",
+                       borderwidth=0, 
+                       relief="flat")
+        style.map("Treeview", background=[("selected", "#094771")])
         
         # Treeview widget
-        self.file_tree = ttk.Treeview(tree_frame, yscrollcommand=scrollbar.set)
+        self.file_tree = ttk.Treeview(tree_frame, yscrollcommand=lambda *args: scrollbar.set(*args))
         self.file_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.config(command=self.file_tree.yview)
         
-        # Configure Treeview style
-        style = ttk.Style()
-        style.configure("Treeview", background="#252526", 
-                       foreground="#cccccc", fieldbackground="#252526")
+        # Scrollbar
+        scrollbar = tk.Scrollbar(tree_frame, bg="#2d2d2d", troughcolor="#1e1e1e", 
+                                activebackground="#3e3e3e", highlightthickness=0, 
+                                bd=0, relief=tk.FLAT)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        scrollbar.config(command=self.file_tree.yview)
         
         # Bind events
         self.file_tree.bind("<<TreeviewOpen>>", self.on_folder_expand)
         self.file_tree.bind("<Double-1>", self.on_file_double_click)
-        self.file_tree.bind("<Button-3>", self.show_file_context_menu)
         
         # Populate with current directory
         self.populate_tree()
