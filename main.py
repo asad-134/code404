@@ -6,6 +6,8 @@ import json
 import subprocess
 import threading
 import sys
+from utils.ai_service import get_ai_assistant
+from components.ai_assistant import AIAssistantPanel
 
 class CodeEditor:
     def __init__(self, root):
@@ -14,6 +16,17 @@ class CodeEditor:
         self.open_tabs = {}  # Track file paths for each tab
         self.untitled_count = 0
         self.find_dialog = None
+        
+        # AI Assistant
+        self.ai_assistant = None
+        self.ai_panel = None
+        self.ai_panel_visible = False
+        try:
+            self.ai_service = get_ai_assistant()
+            self.ai_enabled = True
+        except Exception as e:
+            self.ai_enabled = False
+            print(f"AI service initialization failed: {str(e)}")
         
         # Define themes
         self.themes = {
@@ -158,6 +171,36 @@ class CodeEditor:
         view_menu.add_separator()
         view_menu.add_command(label="Run Code", command=self.run_code, accelerator="F5")
         
+        # AI menu
+        ai_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="AI Assistant", menu=ai_menu)
+        
+        if self.ai_enabled:
+            ai_menu.add_command(label="Toggle AI Panel", 
+                               command=self.toggle_ai_panel, 
+                               accelerator="Ctrl+Shift+A")
+            ai_menu.add_separator()
+            ai_menu.add_command(label="Explain Code", 
+                               command=self.ai_explain_code, 
+                               accelerator="Ctrl+Shift+E")
+            ai_menu.add_command(label="Fix Code", 
+                               command=self.ai_fix_code, 
+                               accelerator="Ctrl+Shift+F")
+            ai_menu.add_command(label="Refactor Code", 
+                               command=self.ai_refactor_code, 
+                               accelerator="Ctrl+Shift+R")
+            ai_menu.add_command(label="Generate Documentation", 
+                               command=self.ai_generate_docs, 
+                               accelerator="Ctrl+Shift+D")
+            ai_menu.add_separator()
+            ai_menu.add_command(label="Clear Chat History", 
+                               command=lambda: self.ai_panel.clear_chat() if self.ai_panel else None)
+        else:
+            ai_menu.add_command(label="AI Not Available", state='disabled')
+            ai_menu.add_command(label="Check Setup Guide", 
+                               command=lambda: messagebox.showinfo("AI Setup", 
+                                   "Please see SETUP_AI.md for configuration instructions."))
+        
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
@@ -201,12 +244,15 @@ class CodeEditor:
         self.left_pane = tk.Frame(self.paned_window, bg="#252526", width=250)
         self.paned_window.add(self.left_pane, minsize=200)
         
-        # Right pane - split into editor and terminal
-        self.right_pane = tk.Frame(self.paned_window, bg="#1e1e1e")
-        self.paned_window.add(self.right_pane, minsize=400)
+        # Middle pane - split into editor and terminal
+        self.middle_pane = tk.Frame(self.paned_window, bg="#1e1e1e")
+        self.paned_window.add(self.middle_pane, minsize=400)
+        
+        # Right pane - AI Assistant (added when toggled)
+        self.right_pane = tk.Frame(self.paned_window, bg="#1e1e1e", width=350)
         
         # Create vertical paned window for editor and terminal
-        self.editor_terminal_pane = tk.PanedWindow(self.right_pane, orient=tk.VERTICAL,
+        self.editor_terminal_pane = tk.PanedWindow(self.middle_pane, orient=tk.VERTICAL,
                                                     sashwidth=5, bg="#2d2d2d")
         self.editor_terminal_pane.pack(fill=tk.BOTH, expand=True)
         
@@ -220,6 +266,10 @@ class CodeEditor:
         
         # Create terminal widget
         self.create_terminal()
+        
+        # Create AI panel
+        if self.ai_enabled:
+            self.create_ai_panel()
     
     def create_terminal(self):
         """Create the integrated terminal"""
@@ -265,6 +315,46 @@ class CodeEditor:
         self.terminal_output.insert(tk.END, text)
         self.terminal_output.see(tk.END)
         self.terminal_output.config(state='disabled')
+    
+    def create_ai_panel(self):
+        """Create the AI assistant panel"""
+        if not self.ai_enabled:
+            return
+        
+        try:
+            theme = self.themes[self.current_theme]
+            self.ai_panel = AIAssistantPanel(self.right_pane, self.ai_service, theme)
+            self.ai_panel.pack(fill=tk.BOTH, expand=True)
+            
+            # Set up callbacks for editor integration
+            self.ai_panel.get_selection_callback = self.get_selected_code_for_ai
+            self.ai_panel.get_context_callback = self.get_code_context_for_ai
+            
+        except Exception as e:
+            messagebox.showerror("AI Error", f"Failed to create AI panel: {str(e)}")
+            self.ai_enabled = False
+
+    def get_selected_code_for_ai(self):
+        """Get currently selected code from editor"""
+        tab_info = self.get_current_tab_info()
+        if tab_info:
+            text_widget = tab_info['text_widget']
+            try:
+                return text_widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+            except:
+                # No selection, return all code
+                return text_widget.get("1.0", tk.END)
+        return None
+
+    def get_code_context_for_ai(self):
+        """Get current file context for AI"""
+        tab_info = self.get_current_tab_info()
+        if tab_info:
+            text_widget = tab_info['text_widget']
+            code = text_widget.get("1.0", tk.END)
+            file_path = tab_info.get('file_path', 'Untitled')
+            return f"File: {file_path}\n\n{code}"
+        return None
     
     def create_file_explorer(self):
         """Create the file explorer sidebar"""
@@ -1417,6 +1507,60 @@ class CodeEditor:
         except Exception as e:
             self.root.after(0, self.append_terminal_output, 
                           f"\n[ERROR] Failed to run file: {str(e)}\n")
+    
+    def toggle_ai_panel(self):
+        """Toggle AI assistant panel visibility"""
+        if not self.ai_enabled or not self.ai_panel:
+            messagebox.showwarning("AI Not Available", 
+                                  "AI assistant is not configured. See SETUP_AI.md")
+            return
+        
+        if self.ai_panel_visible:
+            self.paned_window.forget(self.right_pane)
+            self.ai_panel_visible = False
+        else:
+            self.paned_window.add(self.right_pane, minsize=300)
+            self.ai_panel_visible = True
+
+    def ai_explain_code(self):
+        """Explain selected code using AI"""
+        if not self.ai_enabled or not self.ai_panel:
+            return
+        
+        if not self.ai_panel_visible:
+            self.toggle_ai_panel()
+        
+        self.ai_panel.explain_code()
+
+    def ai_fix_code(self):
+        """Fix bugs in selected code using AI"""
+        if not self.ai_enabled or not self.ai_panel:
+            return
+        
+        if not self.ai_panel_visible:
+            self.toggle_ai_panel()
+        
+        self.ai_panel.fix_code()
+
+    def ai_refactor_code(self):
+        """Refactor selected code using AI"""
+        if not self.ai_enabled or not self.ai_panel:
+            return
+        
+        if not self.ai_panel_visible:
+            self.toggle_ai_panel()
+        
+        self.ai_panel.refactor_code()
+
+    def ai_generate_docs(self):
+        """Generate documentation for selected code using AI"""
+        if not self.ai_enabled or not self.ai_panel:
+            return
+        
+        if not self.ai_panel_visible:
+            self.toggle_ai_panel()
+        
+        self.ai_panel.generate_docs()
     
     def show_shortcuts_help(self):
         """Show keyboard shortcuts help dialog"""
