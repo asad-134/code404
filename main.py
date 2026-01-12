@@ -6,8 +6,7 @@ import json
 import subprocess
 import threading
 import sys
-from utils.ai_service import get_ai_assistant
-from components.ai_assistant import AIAssistantPanel
+from utils.ai_service import AIService
 
 class CodeEditor:
     def __init__(self, root):
@@ -17,16 +16,13 @@ class CodeEditor:
         self.untitled_count = 0
         self.find_dialog = None
         
-        # AI Assistant
-        self.ai_assistant = None
-        self.ai_panel = None
-        self.ai_panel_visible = False
-        try:
-            self.ai_service = get_ai_assistant()
-            self.ai_enabled = True
-        except Exception as e:
-            self.ai_enabled = False
-            print(f"AI service initialization failed: {str(e)}")
+        # AI features
+        self.ai_service = None
+        self.ai_suggestion = ""
+        self.ai_suggestion_widget = None
+        self.suggestion_timer = None
+        self.suggestion_delay = 1500  # ms delay before showing suggestion
+        self.is_accepting_suggestion = False
         
         # Define themes
         self.themes = {
@@ -77,6 +73,7 @@ class CodeEditor:
         self.create_notebook()
         self.create_status_bar()
         self.setup_keybindings()
+        self.initialize_ai_service()
         
     def load_settings(self):
         """Load settings from config file"""
@@ -86,7 +83,10 @@ class CodeEditor:
             'font_family': 'Consolas',
             'font_size': 11,
             'tab_width': 4,
-            'auto_save_interval': 0  # 0 = disabled
+            'auto_save_interval': 0,  # 0 = disabled
+            'ai_enabled': True,
+            'ai_auto_suggest': True,
+            'ai_suggestion_delay': 1500
         }
         
         try:
@@ -171,36 +171,6 @@ class CodeEditor:
         view_menu.add_separator()
         view_menu.add_command(label="Run Code", command=self.run_code, accelerator="F5")
         
-        # AI menu
-        ai_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="AI Assistant", menu=ai_menu)
-        
-        if self.ai_enabled:
-            ai_menu.add_command(label="Toggle AI Panel", 
-                               command=self.toggle_ai_panel, 
-                               accelerator="Ctrl+Shift+A")
-            ai_menu.add_separator()
-            ai_menu.add_command(label="Explain Code", 
-                               command=self.ai_explain_code, 
-                               accelerator="Ctrl+Shift+E")
-            ai_menu.add_command(label="Fix Code", 
-                               command=self.ai_fix_code, 
-                               accelerator="Ctrl+Shift+F")
-            ai_menu.add_command(label="Refactor Code", 
-                               command=self.ai_refactor_code, 
-                               accelerator="Ctrl+Shift+R")
-            ai_menu.add_command(label="Generate Documentation", 
-                               command=self.ai_generate_docs, 
-                               accelerator="Ctrl+Shift+D")
-            ai_menu.add_separator()
-            ai_menu.add_command(label="Clear Chat History", 
-                               command=lambda: self.ai_panel.clear_chat() if self.ai_panel else None)
-        else:
-            ai_menu.add_command(label="AI Not Available", state='disabled')
-            ai_menu.add_command(label="Check Setup Guide", 
-                               command=lambda: messagebox.showinfo("AI Setup", 
-                                   "Please see SETUP_AI.md for configuration instructions."))
-        
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
@@ -244,15 +214,12 @@ class CodeEditor:
         self.left_pane = tk.Frame(self.paned_window, bg="#252526", width=250)
         self.paned_window.add(self.left_pane, minsize=200)
         
-        # Middle pane - split into editor and terminal
-        self.middle_pane = tk.Frame(self.paned_window, bg="#1e1e1e")
-        self.paned_window.add(self.middle_pane, minsize=400)
-        
-        # Right pane - AI Assistant (added when toggled)
-        self.right_pane = tk.Frame(self.paned_window, bg="#1e1e1e", width=350)
+        # Right pane - split into editor and terminal
+        self.right_pane = tk.Frame(self.paned_window, bg="#1e1e1e")
+        self.paned_window.add(self.right_pane, minsize=400)
         
         # Create vertical paned window for editor and terminal
-        self.editor_terminal_pane = tk.PanedWindow(self.middle_pane, orient=tk.VERTICAL,
+        self.editor_terminal_pane = tk.PanedWindow(self.right_pane, orient=tk.VERTICAL,
                                                     sashwidth=5, bg="#2d2d2d")
         self.editor_terminal_pane.pack(fill=tk.BOTH, expand=True)
         
@@ -266,10 +233,6 @@ class CodeEditor:
         
         # Create terminal widget
         self.create_terminal()
-        
-        # Create AI panel
-        if self.ai_enabled:
-            self.create_ai_panel()
     
     def create_terminal(self):
         """Create the integrated terminal"""
@@ -315,46 +278,6 @@ class CodeEditor:
         self.terminal_output.insert(tk.END, text)
         self.terminal_output.see(tk.END)
         self.terminal_output.config(state='disabled')
-    
-    def create_ai_panel(self):
-        """Create the AI assistant panel"""
-        if not self.ai_enabled:
-            return
-        
-        try:
-            theme = self.themes[self.current_theme]
-            self.ai_panel = AIAssistantPanel(self.right_pane, self.ai_service, theme)
-            self.ai_panel.pack(fill=tk.BOTH, expand=True)
-            
-            # Set up callbacks for editor integration
-            self.ai_panel.get_selection_callback = self.get_selected_code_for_ai
-            self.ai_panel.get_context_callback = self.get_code_context_for_ai
-            
-        except Exception as e:
-            messagebox.showerror("AI Error", f"Failed to create AI panel: {str(e)}")
-            self.ai_enabled = False
-
-    def get_selected_code_for_ai(self):
-        """Get currently selected code from editor"""
-        tab_info = self.get_current_tab_info()
-        if tab_info:
-            text_widget = tab_info['text_widget']
-            try:
-                return text_widget.get(tk.SEL_FIRST, tk.SEL_LAST)
-            except:
-                # No selection, return all code
-                return text_widget.get("1.0", tk.END)
-        return None
-
-    def get_code_context_for_ai(self):
-        """Get current file context for AI"""
-        tab_info = self.get_current_tab_info()
-        if tab_info:
-            text_widget = tab_info['text_widget']
-            code = text_widget.get("1.0", tk.END)
-            file_path = tab_info.get('file_path', 'Untitled')
-            return f"File: {file_path}\n\n{code}"
-        return None
     
     def create_file_explorer(self):
         """Create the file explorer sidebar"""
@@ -643,6 +566,14 @@ class CodeEditor:
         # Bind cursor movement events for status bar
         text_widget.bind("<KeyRelease>", lambda e: self.update_status_bar(text_widget), add='+')
         text_widget.bind("<ButtonRelease-1>", lambda e: self.update_status_bar(text_widget))
+        
+        # AI code completion bindings
+        text_widget.bind("<KeyRelease>", lambda e: self.on_key_release_for_ai(e, text_widget), add='+')
+        text_widget.bind("<Tab>", lambda e: self.accept_ai_suggestion(text_widget))
+        text_widget.bind("<Escape>", lambda e: self.reject_ai_suggestion(text_widget))
+        
+        # Right-click context menu for AI features
+        text_widget.bind("<Button-3>", lambda e: self.show_editor_context_menu(e, text_widget))
         
         # Add tab to notebook
         self.notebook.add(tab_frame, text=title)
@@ -985,6 +916,10 @@ class CodeEditor:
         
         self.root.bind("<Control-f>", lambda e: self.show_find_dialog())
         self.root.bind("<Control-h>", lambda e: self.show_replace_dialog())
+        
+        # AI shortcuts
+        self.root.bind("<Control-space>", lambda e: self.trigger_ai_completion())
+        self.root.bind("<Control-Shift-I>", lambda e: self.explain_selected_code())
         
         # Tab switching
         self.root.bind("<Control-Tab>", lambda e: self.next_tab())
@@ -1508,60 +1443,6 @@ class CodeEditor:
             self.root.after(0, self.append_terminal_output, 
                           f"\n[ERROR] Failed to run file: {str(e)}\n")
     
-    def toggle_ai_panel(self):
-        """Toggle AI assistant panel visibility"""
-        if not self.ai_enabled or not self.ai_panel:
-            messagebox.showwarning("AI Not Available", 
-                                  "AI assistant is not configured. See SETUP_AI.md")
-            return
-        
-        if self.ai_panel_visible:
-            self.paned_window.forget(self.right_pane)
-            self.ai_panel_visible = False
-        else:
-            self.paned_window.add(self.right_pane, minsize=300)
-            self.ai_panel_visible = True
-
-    def ai_explain_code(self):
-        """Explain selected code using AI"""
-        if not self.ai_enabled or not self.ai_panel:
-            return
-        
-        if not self.ai_panel_visible:
-            self.toggle_ai_panel()
-        
-        self.ai_panel.explain_code()
-
-    def ai_fix_code(self):
-        """Fix bugs in selected code using AI"""
-        if not self.ai_enabled or not self.ai_panel:
-            return
-        
-        if not self.ai_panel_visible:
-            self.toggle_ai_panel()
-        
-        self.ai_panel.fix_code()
-
-    def ai_refactor_code(self):
-        """Refactor selected code using AI"""
-        if not self.ai_enabled or not self.ai_panel:
-            return
-        
-        if not self.ai_panel_visible:
-            self.toggle_ai_panel()
-        
-        self.ai_panel.refactor_code()
-
-    def ai_generate_docs(self):
-        """Generate documentation for selected code using AI"""
-        if not self.ai_enabled or not self.ai_panel:
-            return
-        
-        if not self.ai_panel_visible:
-            self.toggle_ai_panel()
-        
-        self.ai_panel.generate_docs()
-    
     def show_shortcuts_help(self):
         """Show keyboard shortcuts help dialog"""
         help_window = tk.Toplevel(self.root)
@@ -1644,7 +1525,399 @@ Ctrl+W         Close Current Tab
                            "• Find and replace\n"
                            "• Line numbers\n"
                            "• Multiple tabs\n"
-                           "• Status bar\n")
+                           "• Status bar\n"
+                           "• AI-powered code completion and explanation\n")
+    
+    # ============================================================================
+    # AI SERVICE METHODS (Step 2 & 3)
+    # ============================================================================
+    
+    def initialize_ai_service(self):
+        """Initialize the AI service with configuration"""
+        try:
+            self.ai_service = AIService()
+            if self.ai_service.is_available():
+                model_info = self.ai_service.get_model_info()
+                self.append_terminal_output(f"\n✓ AI Service initialized: {model_info['model']}\n", "#00ff00")
+                self.update_status_left(f"AI: {model_info['model'].split('/')[-1]}")
+            else:
+                self.append_terminal_output("\n⚠ AI Service not available. Check .env configuration.\n", "#ffaa00")
+        except Exception as e:
+            self.append_terminal_output(f"\n✗ AI initialization failed: {str(e)}\n", "#ff0000")
+            self.ai_service = None
+    
+    def update_status_left(self, message):
+        """Update left side of status bar"""
+        self.status_left.config(text=message)
+    
+    # ============================================================================
+    # STEP 4: CODE COMPLETION (Copilot-style)
+    # ============================================================================
+    
+    def on_key_release_for_ai(self, event, text_widget):
+        """Handle key release for AI suggestions"""
+        # Ignore special keys and when accepting suggestions
+        if self.is_accepting_suggestion:
+            return
+        
+        ignored_keys = ['Shift_L', 'Shift_R', 'Control_L', 'Control_R', 
+                       'Alt_L', 'Alt_R', 'Up', 'Down', 'Left', 'Right',
+                       'Home', 'End', 'Page_Up', 'Page_Down', 'Escape', 'Tab']
+        
+        if event.keysym in ignored_keys:
+            self.clear_ai_suggestion(text_widget)
+            return
+        
+        # Check if AI is enabled
+        if not self.ai_service or not self.ai_service.is_available():
+            return
+        
+        if not self.settings.get('ai_auto_suggest', True):
+            return
+        
+        # Clear existing suggestion
+        self.clear_ai_suggestion(text_widget)
+        
+        # Cancel previous timer
+        if self.suggestion_timer:
+            self.root.after_cancel(self.suggestion_timer)
+        
+        # Set new timer for suggestion
+        delay = self.settings.get('ai_suggestion_delay', 1500)
+        self.suggestion_timer = self.root.after(delay, 
+                                               lambda: self.request_ai_suggestion(text_widget))
+    
+    def request_ai_suggestion(self, text_widget):
+        """Request AI code completion suggestion"""
+        try:
+            # Get cursor position
+            cursor_pos = text_widget.index(tk.INSERT)
+            
+            # Get code before and after cursor
+            code_before = text_widget.get("1.0", cursor_pos)
+            code_after = text_widget.get(cursor_pos, tk.END)
+            
+            # Get current line
+            line_start = text_widget.index(f"{cursor_pos} linestart")
+            line_end = text_widget.index(f"{cursor_pos} lineend")
+            current_line = text_widget.get(line_start, line_end)
+            
+            # Don't suggest if line is empty or just whitespace
+            if not current_line.strip():
+                return
+            
+            # Get file info
+            tab_info = self.get_current_tab_info()
+            file_name = "untitled"
+            language = "python"
+            
+            if tab_info and tab_info['file_path']:
+                file_name = os.path.basename(tab_info['file_path'])
+                ext = os.path.splitext(file_name)[1]
+                if ext == '.py':
+                    language = 'python'
+                elif ext == '.js':
+                    language = 'javascript'
+                elif ext == '.html':
+                    language = 'html'
+            
+            # Show loading indicator
+            self.update_status_left("AI: Generating suggestion...")
+            
+            # Request suggestion in background thread
+            def generate_suggestion():
+                suggestion = self.ai_service.generate_completion_sync(
+                    code_before=code_before,
+                    code_after=code_after,
+                    current_line=current_line,
+                    file_name=file_name,
+                    language=language
+                )
+                
+                # Update UI in main thread
+                self.root.after(0, lambda: self.show_ai_suggestion(text_widget, suggestion))
+            
+            # Run in background thread
+            thread = threading.Thread(target=generate_suggestion, daemon=True)
+            thread.start()
+            
+        except Exception as e:
+            print(f"Error requesting AI suggestion: {e}")
+            self.update_status_left("AI: Error")
+    
+    def show_ai_suggestion(self, text_widget, suggestion):
+        """Display AI suggestion as ghost text"""
+        try:
+            if not suggestion or suggestion.strip() == "":
+                self.update_status_left("AI: No suggestion")
+                return
+            
+            # Clean up suggestion
+            suggestion = suggestion.strip()
+            
+            # Remove markdown code blocks if present
+            if suggestion.startswith('```'):
+                lines = suggestion.split('\n')
+                suggestion = '\n'.join(lines[1:-1]) if len(lines) > 2 else suggestion
+            
+            self.ai_suggestion = suggestion
+            self.ai_suggestion_widget = text_widget
+            
+            # Get cursor position
+            cursor_pos = text_widget.index(tk.INSERT)
+            
+            # Create tag for ghost text
+            theme = self.themes[self.current_theme]
+            text_widget.tag_configure("ai_suggestion", 
+                                     foreground="#666666",
+                                     background=theme['bg'])
+            
+            # Insert ghost text
+            text_widget.insert(cursor_pos, suggestion, "ai_suggestion")
+            
+            # Move cursor back
+            text_widget.mark_set(tk.INSERT, cursor_pos)
+            
+            self.update_status_left(f"AI: Suggestion ready (Tab to accept, Esc to reject)")
+            
+        except Exception as e:
+            print(f"Error showing AI suggestion: {e}")
+            self.update_status_left("AI: Error displaying suggestion")
+    
+    def accept_ai_suggestion(self, text_widget):
+        """Accept the AI suggestion (Tab key)"""
+        if not self.ai_suggestion or self.ai_suggestion_widget != text_widget:
+            return "break"  # Let Tab work normally
+        
+        try:
+            self.is_accepting_suggestion = True
+            
+            # Remove the ghost text tag
+            cursor_pos = text_widget.index(tk.INSERT)
+            end_pos = text_widget.index(f"{cursor_pos} + {len(self.ai_suggestion)}c")
+            
+            # Remove old tag and keep the text
+            text_widget.tag_remove("ai_suggestion", cursor_pos, end_pos)
+            
+            # Move cursor to end of suggestion
+            text_widget.mark_set(tk.INSERT, end_pos)
+            
+            # Clear suggestion
+            self.ai_suggestion = ""
+            self.ai_suggestion_widget = None
+            
+            self.update_status_left("AI: Suggestion accepted")
+            
+            self.is_accepting_suggestion = False
+            
+        except Exception as e:
+            print(f"Error accepting suggestion: {e}")
+            self.is_accepting_suggestion = False
+        
+        return "break"  # Prevent default Tab behavior
+    
+    def reject_ai_suggestion(self, text_widget):
+        """Reject the AI suggestion (Escape key)"""
+        if self.ai_suggestion and self.ai_suggestion_widget == text_widget:
+            self.clear_ai_suggestion(text_widget)
+            self.update_status_left("AI: Suggestion rejected")
+        return "break"
+    
+    def clear_ai_suggestion(self, text_widget):
+        """Clear any displayed AI suggestion"""
+        try:
+            if self.ai_suggestion and self.ai_suggestion_widget == text_widget:
+                # Get cursor position
+                cursor_pos = text_widget.index(tk.INSERT)
+                end_pos = text_widget.index(f"{cursor_pos} + {len(self.ai_suggestion)}c")
+                
+                # Delete ghost text
+                text_widget.delete(cursor_pos, end_pos)
+                
+                # Clear suggestion
+                self.ai_suggestion = ""
+                self.ai_suggestion_widget = None
+        except:
+            pass
+    
+    def trigger_ai_completion(self):
+        """Manually trigger AI completion (Ctrl+Space)"""
+        tab_info = self.get_current_tab_info()
+        if tab_info:
+            text_widget = tab_info['text_widget']
+            self.clear_ai_suggestion(text_widget)
+            self.request_ai_suggestion(text_widget)
+    
+    # ============================================================================
+    # STEP 5: CODE EXPLANATION
+    # ============================================================================
+    
+    def show_editor_context_menu(self, event, text_widget):
+        """Show context menu with AI options on right-click"""
+        context_menu = tk.Menu(self.root, tearoff=0)
+        
+        # Check if text is selected
+        try:
+            selected_text = text_widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+            has_selection = len(selected_text) > 0
+        except:
+            has_selection = False
+        
+        # Standard options
+        context_menu.add_command(label="Cut", command=lambda: self.edit_cut())
+        context_menu.add_command(label="Copy", command=lambda: self.edit_copy())
+        context_menu.add_command(label="Paste", command=lambda: self.edit_paste())
+        context_menu.add_separator()
+        
+        # AI options
+        if self.ai_service and self.ai_service.is_available():
+            if has_selection:
+                context_menu.add_command(label="✨ Explain Code (Ctrl+Shift+I)", 
+                                        command=lambda: self.explain_selected_code())
+                context_menu.add_command(label="✨ Refactor Code", 
+                                        command=lambda: self.refactor_selected_code())
+                context_menu.add_command(label="✨ Fix Code", 
+                                        command=lambda: self.fix_selected_code())
+            else:
+                context_menu.add_command(label="✨ AI Suggestion (Ctrl+Space)", 
+                                        command=lambda: self.trigger_ai_completion())
+        
+        context_menu.post(event.x_root, event.y_root)
+    
+    def explain_selected_code(self):
+        """Explain the selected code using AI"""
+        tab_info = self.get_current_tab_info()
+        if not tab_info:
+            return
+        
+        text_widget = tab_info['text_widget']
+        
+        # Get selected text
+        try:
+            selected_code = text_widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+        except:
+            messagebox.showwarning("No Selection", "Please select code to explain.")
+            return
+        
+        if not selected_code.strip():
+            messagebox.showwarning("Empty Selection", "Please select some code to explain.")
+            return
+        
+        if not self.ai_service or not self.ai_service.is_available():
+            messagebox.showerror("AI Not Available", "AI service is not initialized.")
+            return
+        
+        # Show explanation dialog
+        self.show_code_explanation_dialog(selected_code, tab_info)
+    
+    def show_code_explanation_dialog(self, code, tab_info):
+        """Show a dialog with code explanation"""
+        # Create dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("AI Code Explanation")
+        dialog.geometry("700x500")
+        
+        theme = self.themes[self.current_theme]
+        dialog.configure(bg=theme['bg'])
+        
+        # Title
+        title_frame = tk.Frame(dialog, bg=theme['toolbar_bg'], height=40)
+        title_frame.pack(side=tk.TOP, fill=tk.X)
+        
+        tk.Label(title_frame, text="✨ AI Code Explanation", 
+                bg=theme['toolbar_bg'], fg=theme['fg'],
+                font=("Arial", 11, "bold"), padx=10).pack(side=tk.LEFT, pady=8)
+        
+        # Code preview
+        code_frame = tk.LabelFrame(dialog, text="Selected Code:", 
+                                   bg=theme['bg'], fg=theme['fg'],
+                                   font=("Arial", 9, "bold"))
+        code_frame.pack(fill=tk.BOTH, padx=10, pady=5, expand=False)
+        
+        code_text = tk.Text(code_frame, height=8, wrap=tk.WORD,
+                           bg=theme['line_num_bg'], fg=theme['fg'],
+                           font=("Consolas", 9), padx=5, pady=5)
+        code_text.pack(fill=tk.BOTH, padx=5, pady=5)
+        code_text.insert("1.0", code)
+        code_text.config(state='disabled')
+        
+        # Explanation area
+        explanation_frame = tk.LabelFrame(dialog, text="Explanation:",
+                                         bg=theme['bg'], fg=theme['fg'],
+                                         font=("Arial", 9, "bold"))
+        explanation_frame.pack(fill=tk.BOTH, padx=10, pady=5, expand=True)
+        
+        explanation_text = tk.Text(explanation_frame, wrap=tk.WORD,
+                                   bg=theme['bg'], fg=theme['fg'],
+                                   font=("Arial", 10), padx=10, pady=10)
+        explanation_text.pack(fill=tk.BOTH, padx=5, pady=5, expand=True)
+        
+        # Scrollbar
+        scrollbar = tk.Scrollbar(explanation_text)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        explanation_text.config(yscrollcommand=scrollbar.set)
+        scrollbar.config(command=explanation_text.yview)
+        
+        # Show loading message
+        explanation_text.insert("1.0", "⏳ Generating explanation...\n\nPlease wait...")
+        explanation_text.config(state='disabled')
+        
+        # Button frame
+        button_frame = tk.Frame(dialog, bg=theme['bg'])
+        button_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        
+        close_btn = tk.Button(button_frame, text="Close", 
+                             command=dialog.destroy,
+                             bg=theme['button_bg'], fg=theme['fg'],
+                             padx=20, pady=5)
+        close_btn.pack(side=tk.RIGHT)
+        
+        # Get file info
+        file_name = "untitled"
+        language = "python"
+        if tab_info['file_path']:
+            file_name = os.path.basename(tab_info['file_path'])
+            ext = os.path.splitext(file_name)[1]
+            language = 'python' if ext == '.py' else 'code'
+        
+        # Generate explanation in background
+        def generate_explanation():
+            try:
+                explanation = self.ai_service.explain_code(
+                    code=code,
+                    file_name=file_name,
+                    language=language
+                )
+                
+                # Update UI in main thread
+                def update_ui():
+                    explanation_text.config(state='normal')
+                    explanation_text.delete("1.0", tk.END)
+                    explanation_text.insert("1.0", explanation)
+                    explanation_text.config(state='disabled')
+                
+                self.root.after(0, update_ui)
+                
+            except Exception as e:
+                def show_error():
+                    explanation_text.config(state='normal')
+                    explanation_text.delete("1.0", tk.END)
+                    explanation_text.insert("1.0", f"❌ Error: {str(e)}")
+                    explanation_text.config(state='disabled')
+                
+                self.root.after(0, show_error)
+        
+        # Run in background thread
+        thread = threading.Thread(target=generate_explanation, daemon=True)
+        thread.start()
+    
+    def refactor_selected_code(self):
+        """Refactor selected code (placeholder for future implementation)"""
+        messagebox.showinfo("Coming Soon", "Code refactoring will be implemented in Step 7!")
+    
+    def fix_selected_code(self):
+        """Fix/debug selected code (placeholder for future implementation)"""
+        messagebox.showinfo("Coming Soon", "Code fixing will be implemented in Step 8!")
 
 def main():
     root = tk.Tk()
