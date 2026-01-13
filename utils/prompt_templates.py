@@ -194,25 +194,26 @@ Generate appropriate documentation:"""
     @staticmethod
     def get_chat_prompt():
         """Template for conversational AI chat about code"""
-        system_template = """You are an expert programming assistant in a code editor.
+        system_template = """You are an expert programming assistant integrated into a code editor.
 You help developers with:
 - Code questions and explanations
 - Implementation guidance
 - Debugging assistance
 - Best practices advice
 - Architecture decisions
+- Code reviews and improvements
 
-You have access to the current file context and can reference it in your responses.
-Be helpful, concise, and provide code examples when relevant."""
+You maintain conversation context and can reference previous messages.
+Be helpful, concise, and provide code examples when relevant.
+Format code blocks with ``` for better readability."""
 
-        human_template = """Current File: {file_name}
-Language: {language}
+        human_template = """Context: {file_context}
 
-File Context (if relevant):
-{file_context}
+Conversation History:
+{conversation}
 
-User Question:
-{question}
+User Message:
+{user_message}
 
 Provide a helpful response:"""
 

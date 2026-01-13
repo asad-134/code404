@@ -20,9 +20,14 @@ class CodeEditor:
         self.ai_service = None
         self.ai_suggestion = ""
         self.ai_suggestion_widget = None
+        self.ai_suggestion_start_pos = None  # Track ghost text start position
+        self.ai_suggestion_end_pos = None    # Track ghost text end position
         self.suggestion_timer = None
         self.suggestion_delay = 1500  # ms delay before showing suggestion
         self.is_accepting_suggestion = False
+        self.ai_explanation_panel = None
+        self.ai_panel_visible = False
+        self.chat_history = []  # Store chat conversation history
         
         # Define themes
         self.themes = {
@@ -171,6 +176,21 @@ class CodeEditor:
         view_menu.add_separator()
         view_menu.add_command(label="Run Code", command=self.run_code, accelerator="F5")
         
+        # AI menu
+        ai_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="AI", menu=ai_menu)
+        ai_menu.add_command(label="Code Completion", command=self.trigger_ai_completion, accelerator="Ctrl+Space")
+        ai_menu.add_command(label="Explain Code", command=self.explain_selected_code, accelerator="Ctrl+Shift+I")
+        ai_menu.add_separator()
+        ai_menu.add_command(label="Generate Code from Comment", command=self.generate_code_from_comment, accelerator="Ctrl+Shift+G")
+        ai_menu.add_command(label="Refactor Code", command=self.refactor_selected_code, accelerator="Ctrl+Shift+R")
+        ai_menu.add_command(label="Fix Code Errors", command=self.fix_selected_code, accelerator="Ctrl+Shift+F")
+        ai_menu.add_separator()
+        ai_menu.add_command(label="Scan File for Bugs", command=self.scan_file_for_bugs, accelerator="Ctrl+Shift+B")
+        ai_menu.add_command(label="AI Chat", command=self.show_ai_chat, accelerator="Ctrl+Shift+C")
+        ai_menu.add_separator()
+        ai_menu.add_command(label="Generate Documentation", command=self.generate_documentation)
+        
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
@@ -218,8 +238,17 @@ class CodeEditor:
         self.right_pane = tk.Frame(self.paned_window, bg="#1e1e1e")
         self.paned_window.add(self.right_pane, minsize=400)
         
+        # Create horizontal paned window for editor/terminal and AI panel
+        self.main_right_pane = tk.PanedWindow(self.right_pane, orient=tk.HORIZONTAL,
+                                              sashwidth=5, bg="#2d2d2d")
+        self.main_right_pane.pack(fill=tk.BOTH, expand=True)
+        
+        # Left side: editor and terminal
+        self.editor_terminal_container = tk.Frame(self.main_right_pane, bg="#1e1e1e")
+        self.main_right_pane.add(self.editor_terminal_container, minsize=400)
+        
         # Create vertical paned window for editor and terminal
-        self.editor_terminal_pane = tk.PanedWindow(self.right_pane, orient=tk.VERTICAL,
+        self.editor_terminal_pane = tk.PanedWindow(self.editor_terminal_container, orient=tk.VERTICAL,
                                                     sashwidth=5, bg="#2d2d2d")
         self.editor_terminal_pane.pack(fill=tk.BOTH, expand=True)
         
@@ -572,6 +601,12 @@ class CodeEditor:
         text_widget.bind("<Tab>", lambda e: self.accept_ai_suggestion(text_widget))
         text_widget.bind("<Escape>", lambda e: self.reject_ai_suggestion(text_widget))
         
+        # Clear ghost text on any interaction
+        text_widget.bind("<Button-1>", lambda e: self.on_mouse_click(e, text_widget))
+        text_widget.bind("<ButtonRelease-1>", lambda e: None)  # Prevent double trigger
+        text_widget.bind("<FocusOut>", lambda e: self.clear_ai_suggestion(text_widget), add='+')
+        text_widget.bind("<KeyPress>", lambda e: self.on_key_press_clear_ghost(e, text_widget))
+        
         # Right-click context menu for AI features
         text_widget.bind("<Button-3>", lambda e: self.show_editor_context_menu(e, text_widget))
         
@@ -728,6 +763,10 @@ class CodeEditor:
         tab_info = self.get_current_tab_info()
         if tab_info:
             text_widget = tab_info['text_widget']
+            
+            # Clear any ghost text before saving
+            self.clear_ai_suggestion(text_widget)
+            
             file_path = tab_info['file_path']
             
             if file_path:
@@ -920,6 +959,11 @@ class CodeEditor:
         # AI shortcuts
         self.root.bind("<Control-space>", lambda e: self.trigger_ai_completion())
         self.root.bind("<Control-Shift-I>", lambda e: self.explain_selected_code())
+        self.root.bind("<Control-Shift-G>", lambda e: self.generate_code_from_comment())
+        self.root.bind("<Control-Shift-R>", lambda e: self.refactor_selected_code())
+        self.root.bind("<Control-Shift-F>", lambda e: self.fix_selected_code())
+        self.root.bind("<Control-Shift-B>", lambda e: self.scan_file_for_bugs())
+        self.root.bind("<Control-Shift-C>", lambda e: self.show_ai_chat())
         
         # Tab switching
         self.root.bind("<Control-Tab>", lambda e: self.next_tab())
@@ -1360,6 +1404,11 @@ class CodeEditor:
             messagebox.showwarning("No File", "No file is currently open to run.")
             return
         
+        # Clear any ghost text first
+        text_widget = tab_info.get('text_widget')
+        if text_widget:
+            self.clear_ai_suggestion(text_widget)
+        
         file_path = tab_info.get('file_path')
         
         # If file is not saved, prompt to save
@@ -1550,6 +1599,28 @@ Ctrl+W         Close Current Tab
         """Update left side of status bar"""
         self.status_left.config(text=message)
     
+    def on_mouse_click(self, event, text_widget):
+        """Handle mouse click to clear ghost text"""
+        # Clear ghost text immediately on click
+        if self.ai_suggestion and self.ai_suggestion_widget == text_widget:
+            self.clear_ai_suggestion(text_widget)
+    
+    def on_key_press_clear_ghost(self, event, text_widget):
+        """Clear ghost text on any key press (except special keys)"""
+        # Don't clear for modifier keys only
+        if event.keysym in ['Shift_L', 'Shift_R', 'Control_L', 'Control_R', 'Alt_L', 'Alt_R']:
+            return
+        
+        # For Tab and Escape, let their specific handlers deal with it
+        if event.keysym in ['Tab', 'Escape']:
+            return
+        
+        # Clear ghost text before any other input
+        if self.ai_suggestion and self.ai_suggestion_widget == text_widget:
+            # Check if we're not accepting the suggestion
+            if not self.is_accepting_suggestion:
+                self.clear_ai_suggestion(text_widget)
+    
     # ============================================================================
     # STEP 4: CODE COMPLETION (Copilot-style)
     # ============================================================================
@@ -1590,6 +1661,9 @@ Ctrl+W         Close Current Tab
     def request_ai_suggestion(self, text_widget):
         """Request AI code completion suggestion"""
         try:
+            # Clear any existing ghost text first
+            self.clear_ai_suggestion(text_widget)
+            
             # Get cursor position
             cursor_pos = text_widget.index(tk.INSERT)
             
@@ -1648,6 +1722,11 @@ Ctrl+W         Close Current Tab
     def show_ai_suggestion(self, text_widget, suggestion):
         """Display AI suggestion as ghost text"""
         try:
+            # Double-check we're still in the right widget
+            current_tab = self.get_current_tab_info()
+            if not current_tab or current_tab['text_widget'] != text_widget:
+                return
+            
             if not suggestion or suggestion.strip() == "":
                 self.update_status_left("AI: No suggestion")
                 return
@@ -1660,25 +1739,49 @@ Ctrl+W         Close Current Tab
                 lines = suggestion.split('\n')
                 suggestion = '\n'.join(lines[1:-1]) if len(lines) > 2 else suggestion
             
+            # Clear any existing ghost text
+            self.clear_ai_suggestion(text_widget)
+            
             self.ai_suggestion = suggestion
             self.ai_suggestion_widget = text_widget
             
             # Get cursor position
             cursor_pos = text_widget.index(tk.INSERT)
+            self.ai_suggestion_start_pos = cursor_pos
             
-            # Create tag for ghost text
+            # Create tag for ghost text with refined appearance
             theme = self.themes[self.current_theme]
+            font_family = self.settings.get('font_family', 'Consolas')
+            font_size = self.settings.get('font_size', 11)
+            
+            # Use different colors based on theme
+            if self.current_theme == 'dark':
+                ghost_color = '#505050'  # Lighter gray for dark theme
+            else:
+                ghost_color = '#999999'  # Medium gray for light theme
+            
             text_widget.tag_configure("ai_suggestion", 
-                                     foreground="#666666",
-                                     background=theme['bg'])
+                                     foreground=ghost_color,
+                                     background=theme['bg'],
+                                     font=(font_family, font_size, 'italic'))
+            
+            # Temporarily disable undo for ghost text insertion
+            text_widget.edit_separator()
             
             # Insert ghost text
             text_widget.insert(cursor_pos, suggestion, "ai_suggestion")
             
-            # Move cursor back
-            text_widget.mark_set(tk.INSERT, cursor_pos)
+            # Store end position
+            self.ai_suggestion_end_pos = text_widget.index(tk.INSERT)
             
-            self.update_status_left(f"AI: Suggestion ready (Tab to accept, Esc to reject)")
+            # Move cursor back to start (this is crucial)
+            text_widget.mark_set(tk.INSERT, cursor_pos)
+            text_widget.see(cursor_pos)
+            
+            # Add another separator so ghost text can be undone separately
+            text_widget.edit_separator()
+            
+            self.update_status_left(f"✨ AI: Tab to accept • Esc to reject")
             
         except Exception as e:
             print(f"Error showing AI suggestion: {e}")
@@ -1687,24 +1790,25 @@ Ctrl+W         Close Current Tab
     def accept_ai_suggestion(self, text_widget):
         """Accept the AI suggestion (Tab key)"""
         if not self.ai_suggestion or self.ai_suggestion_widget != text_widget:
-            return "break"  # Let Tab work normally
+            return None  # Let Tab work normally if no suggestion
         
         try:
             self.is_accepting_suggestion = True
             
-            # Remove the ghost text tag
-            cursor_pos = text_widget.index(tk.INSERT)
-            end_pos = text_widget.index(f"{cursor_pos} + {len(self.ai_suggestion)}c")
+            # Get the suggestion before clearing
+            suggestion = self.ai_suggestion
+            start_pos = self.ai_suggestion_start_pos
             
-            # Remove old tag and keep the text
-            text_widget.tag_remove("ai_suggestion", cursor_pos, end_pos)
+            # Remove the ghost text first
+            self.clear_ai_suggestion(text_widget)
             
-            # Move cursor to end of suggestion
+            # Now insert as real text
+            text_widget.insert(start_pos, suggestion)
+            
+            # Move cursor to end of inserted text
+            end_pos = text_widget.index(f"{start_pos} + {len(suggestion)}c")
             text_widget.mark_set(tk.INSERT, end_pos)
-            
-            # Clear suggestion
-            self.ai_suggestion = ""
-            self.ai_suggestion_widget = None
+            text_widget.see(end_pos)
             
             self.update_status_left("AI: Suggestion accepted")
             
@@ -1725,20 +1829,45 @@ Ctrl+W         Close Current Tab
     
     def clear_ai_suggestion(self, text_widget):
         """Clear any displayed AI suggestion"""
+        if not self.ai_suggestion or self.ai_suggestion_widget != text_widget:
+            return
+        
         try:
-            if self.ai_suggestion and self.ai_suggestion_widget == text_widget:
-                # Get cursor position
-                cursor_pos = text_widget.index(tk.INSERT)
-                end_pos = text_widget.index(f"{cursor_pos} + {len(self.ai_suggestion)}c")
-                
-                # Delete ghost text
-                text_widget.delete(cursor_pos, end_pos)
-                
-                # Clear suggestion
-                self.ai_suggestion = ""
-                self.ai_suggestion_widget = None
-        except:
-            pass
+            # Method 1: Use stored positions if available
+            if self.ai_suggestion_start_pos and self.ai_suggestion_end_pos:
+                try:
+                    start = self.ai_suggestion_start_pos
+                    end = self.ai_suggestion_end_pos
+                    
+                    # Verify the text at this position has the ghost tag
+                    tags = text_widget.tag_names(start)
+                    if "ai_suggestion" in tags:
+                        text_widget.delete(start, end)
+                except tk.TclError:
+                    pass  # Position no longer valid
+            
+            # Method 2: Find all text with ai_suggestion tag
+            try:
+                ranges = text_widget.tag_ranges("ai_suggestion")
+                if ranges:
+                    # Delete in reverse order to maintain positions
+                    for i in range(len(ranges)-1, -1, -2):
+                        if i > 0:
+                            text_widget.delete(ranges[i-1], ranges[i])
+            except tk.TclError:
+                pass
+            
+            # Method 3: Remove the tag entirely
+            text_widget.tag_remove("ai_suggestion", "1.0", tk.END)
+            
+        except Exception as e:
+            print(f"Error clearing ghost text: {e}")
+        finally:
+            # Always clear the tracking variables
+            self.ai_suggestion = ""
+            self.ai_suggestion_widget = None
+            self.ai_suggestion_start_pos = None
+            self.ai_suggestion_end_pos = None
     
     def trigger_ai_completion(self):
         """Manually trigger AI completion (Ctrl+Space)"""
@@ -1774,13 +1903,17 @@ Ctrl+W         Close Current Tab
             if has_selection:
                 context_menu.add_command(label="✨ Explain Code (Ctrl+Shift+I)", 
                                         command=lambda: self.explain_selected_code())
-                context_menu.add_command(label="✨ Refactor Code", 
+                context_menu.add_command(label="✨ Generate from Comment (Ctrl+Shift+G)", 
+                                        command=lambda: self.generate_code_from_comment())
+                context_menu.add_command(label="✨ Refactor Code (Ctrl+Shift+R)", 
                                         command=lambda: self.refactor_selected_code())
-                context_menu.add_command(label="✨ Fix Code", 
+                context_menu.add_command(label="✨ Fix Code (Ctrl+Shift+F)", 
                                         command=lambda: self.fix_selected_code())
             else:
                 context_menu.add_command(label="✨ AI Suggestion (Ctrl+Space)", 
                                         command=lambda: self.trigger_ai_completion())
+                context_menu.add_command(label="✨ Generate from Comment (Ctrl+Shift+G)", 
+                                        command=lambda: self.generate_code_from_comment())
         
         context_menu.post(event.x_root, event.y_root)
     
@@ -1791,6 +1924,9 @@ Ctrl+W         Close Current Tab
             return
         
         text_widget = tab_info['text_widget']
+        
+        # Clear any ghost text first
+        self.clear_ai_suggestion(text_widget)
         
         # Get selected text
         try:
@@ -1811,66 +1947,86 @@ Ctrl+W         Close Current Tab
         self.show_code_explanation_dialog(selected_code, tab_info)
     
     def show_code_explanation_dialog(self, code, tab_info):
-        """Show a dialog with code explanation"""
-        # Create dialog
-        dialog = tk.Toplevel(self.root)
-        dialog.title("AI Code Explanation")
-        dialog.geometry("700x500")
-        
+        """Show AI explanation in right panel"""
         theme = self.themes[self.current_theme]
-        dialog.configure(bg=theme['bg'])
         
-        # Title
-        title_frame = tk.Frame(dialog, bg=theme['toolbar_bg'], height=40)
-        title_frame.pack(side=tk.TOP, fill=tk.X)
+        # Create or show AI explanation panel
+        if self.ai_explanation_panel is None:
+            self.ai_explanation_panel = tk.Frame(self.main_right_pane, bg=theme['bg'], width=400)
+            self.main_right_pane.add(self.ai_explanation_panel, minsize=350)
+            self.ai_panel_visible = True
+            
+            # Title bar
+            title_frame = tk.Frame(self.ai_explanation_panel, bg=theme['toolbar_bg'], height=35)
+            title_frame.pack(side=tk.TOP, fill=tk.X)
+            
+            tk.Label(title_frame, text="✨ AI Assistant", 
+                    bg=theme['toolbar_bg'], fg=theme['fg'],
+                    font=("Arial", 10, "bold"), padx=10).pack(side=tk.LEFT, pady=5)
+            
+            # Close button
+            close_btn = tk.Button(title_frame, text="✕", 
+                                 command=self.hide_ai_panel,
+                                 bg=theme['toolbar_bg'], fg=theme['fg'],
+                                 relief=tk.FLAT, padx=8, font=("Arial", 12, "bold"))
+            close_btn.pack(side=tk.RIGHT, padx=5)
+            
+            # Main content frame
+            self.ai_content_frame = tk.Frame(self.ai_explanation_panel, bg=theme['bg'])
+            self.ai_content_frame.pack(fill=tk.BOTH, expand=True)
         
-        tk.Label(title_frame, text="✨ AI Code Explanation", 
-                bg=theme['toolbar_bg'], fg=theme['fg'],
-                font=("Arial", 11, "bold"), padx=10).pack(side=tk.LEFT, pady=8)
+        elif not self.ai_panel_visible:
+            self.main_right_pane.add(self.ai_explanation_panel, minsize=350)
+            self.ai_panel_visible = True
         
-        # Code preview
-        code_frame = tk.LabelFrame(dialog, text="Selected Code:", 
+        # Clear previous content
+        for widget in self.ai_content_frame.winfo_children():
+            widget.destroy()
+        
+        # Code preview section
+        code_frame = tk.LabelFrame(self.ai_content_frame, text="Selected Code:", 
                                    bg=theme['bg'], fg=theme['fg'],
-                                   font=("Arial", 9, "bold"))
-        code_frame.pack(fill=tk.BOTH, padx=10, pady=5, expand=False)
+                                   font=("Arial", 9, "bold"), padx=5, pady=5)
+        code_frame.pack(fill=tk.BOTH, padx=10, pady=10, expand=False)
         
-        code_text = tk.Text(code_frame, height=8, wrap=tk.WORD,
+        code_scroll_frame = tk.Frame(code_frame, bg=theme['bg'])
+        code_scroll_frame.pack(fill=tk.BOTH, expand=True)
+        
+        code_scrollbar = tk.Scrollbar(code_scroll_frame)
+        code_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        code_text = tk.Text(code_scroll_frame, height=6, wrap=tk.WORD,
                            bg=theme['line_num_bg'], fg=theme['fg'],
-                           font=("Consolas", 9), padx=5, pady=5)
-        code_text.pack(fill=tk.BOTH, padx=5, pady=5)
+                           font=("Consolas", 9), padx=8, pady=5,
+                           yscrollcommand=code_scrollbar.set)
+        code_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        code_scrollbar.config(command=code_text.yview)
+        
         code_text.insert("1.0", code)
         code_text.config(state='disabled')
         
-        # Explanation area
-        explanation_frame = tk.LabelFrame(dialog, text="Explanation:",
+        # Explanation section
+        explanation_frame = tk.LabelFrame(self.ai_content_frame, text="Explanation:",
                                          bg=theme['bg'], fg=theme['fg'],
-                                         font=("Arial", 9, "bold"))
+                                         font=("Arial", 9, "bold"), padx=5, pady=5)
         explanation_frame.pack(fill=tk.BOTH, padx=10, pady=5, expand=True)
         
-        explanation_text = tk.Text(explanation_frame, wrap=tk.WORD,
-                                   bg=theme['bg'], fg=theme['fg'],
-                                   font=("Arial", 10), padx=10, pady=10)
-        explanation_text.pack(fill=tk.BOTH, padx=5, pady=5, expand=True)
+        exp_scroll_frame = tk.Frame(explanation_frame, bg=theme['bg'])
+        exp_scroll_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Scrollbar
-        scrollbar = tk.Scrollbar(explanation_text)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        explanation_text.config(yscrollcommand=scrollbar.set)
-        scrollbar.config(command=explanation_text.yview)
+        exp_scrollbar = tk.Scrollbar(exp_scroll_frame)
+        exp_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        explanation_text = tk.Text(exp_scroll_frame, wrap=tk.WORD,
+                                   bg=theme['bg'], fg=theme['fg'],
+                                   font=("Arial", 10), padx=10, pady=10,
+                                   yscrollcommand=exp_scrollbar.set)
+        explanation_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        exp_scrollbar.config(command=explanation_text.yview)
         
         # Show loading message
         explanation_text.insert("1.0", "⏳ Generating explanation...\n\nPlease wait...")
         explanation_text.config(state='disabled')
-        
-        # Button frame
-        button_frame = tk.Frame(dialog, bg=theme['bg'])
-        button_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
-        
-        close_btn = tk.Button(button_frame, text="Close", 
-                             command=dialog.destroy,
-                             bg=theme['button_bg'], fg=theme['fg'],
-                             padx=20, pady=5)
-        close_btn.pack(side=tk.RIGHT)
         
         # Get file info
         file_name = "untitled"
@@ -1911,13 +2067,1139 @@ Ctrl+W         Close Current Tab
         thread = threading.Thread(target=generate_explanation, daemon=True)
         thread.start()
     
+    def hide_ai_panel(self):
+        """Hide the AI explanation panel"""
+        if self.ai_explanation_panel and self.ai_panel_visible:
+            self.main_right_pane.forget(self.ai_explanation_panel)
+            self.ai_panel_visible = False
+    
+    # ============================================================================
+    # STEP 6: CODE GENERATION FROM COMMENTS
+    # ============================================================================
+    
+    def generate_code_from_comment(self):
+        """Generate code from TODO comment or description"""
+        tab_info = self.get_current_tab_info()
+        if not tab_info:
+            return
+        
+        text_widget = tab_info['text_widget']
+        
+        # Clear any ghost text first
+        self.clear_ai_suggestion(text_widget)
+        
+        # Try to get selected text first
+        try:
+            selected_text = text_widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+            requirement = selected_text.strip()
+            selection_start = text_widget.index(tk.SEL_FIRST)
+            selection_end = text_widget.index(tk.SEL_LAST)
+            has_selection = True
+        except:
+            # No selection, try to detect TODO comment on current line
+            cursor_pos = text_widget.index(tk.INSERT)
+            line_start = text_widget.index(f"{cursor_pos} linestart")
+            line_end = text_widget.index(f"{cursor_pos} lineend")
+            current_line = text_widget.get(line_start, line_end)
+            
+            # Check if line contains TODO or a comment
+            if 'TODO' in current_line.upper() or current_line.strip().startswith('#'):
+                requirement = current_line.strip().lstrip('#').strip()
+                selection_start = line_start
+                selection_end = line_end
+                has_selection = True
+            else:
+                # Ask user for requirement
+                requirement = simpledialog.askstring(
+                    "Generate Code",
+                    "Enter code requirement or description:",
+                    parent=self.root
+                )
+                if not requirement:
+                    return
+                cursor_pos = text_widget.index(tk.INSERT)
+                selection_start = cursor_pos
+                selection_end = cursor_pos
+                has_selection = False
+        
+        if not requirement:
+            messagebox.showwarning("No Requirement", "Please provide a code description.")
+            return
+        
+        if not self.ai_service or not self.ai_service.is_available():
+            messagebox.showerror("AI Not Available", "AI service is not initialized.")
+            return
+        
+        # Show generation dialog with diff preview
+        self.show_code_generation_dialog(requirement, selection_start, selection_end, has_selection, tab_info)
+    
+    def show_code_generation_dialog(self, requirement, start_pos, end_pos, replace_mode, tab_info):
+        """Show dialog with code generation and diff preview"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("AI Code Generation")
+        dialog.geometry("800x600")
+        
+        theme = self.themes[self.current_theme]
+        dialog.configure(bg=theme['bg'])
+        
+        # Title bar
+        title_frame = tk.Frame(dialog, bg=theme['toolbar_bg'], height=40)
+        title_frame.pack(side=tk.TOP, fill=tk.X)
+        
+        tk.Label(title_frame, text="⚡ AI Code Generation", 
+                bg=theme['toolbar_bg'], fg=theme['fg'],
+                font=("Arial", 11, "bold"), padx=10).pack(side=tk.LEFT, pady=8)
+        
+        # Requirement display
+        req_frame = tk.LabelFrame(dialog, text="Requirement:", 
+                                  bg=theme['bg'], fg=theme['fg'],
+                                  font=("Arial", 9, "bold"))
+        req_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        req_label = tk.Label(req_frame, text=requirement, 
+                            bg=theme['bg'], fg=theme['fg'],
+                            font=("Arial", 10), padx=10, pady=5, wraplength=750, justify=tk.LEFT)
+        req_label.pack(fill=tk.X)
+        
+        # Generated code area
+        code_frame = tk.LabelFrame(dialog, text="Generated Code:",
+                                   bg=theme['bg'], fg=theme['fg'],
+                                   font=("Arial", 9, "bold"))
+        code_frame.pack(fill=tk.BOTH, padx=10, pady=5, expand=True)
+        
+        code_scroll_frame = tk.Frame(code_frame, bg=theme['bg'])
+        code_scroll_frame.pack(fill=tk.BOTH, expand=True)
+        
+        code_scrollbar = tk.Scrollbar(code_scroll_frame)
+        code_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        generated_code_text = tk.Text(code_scroll_frame, wrap=tk.WORD,
+                                      bg=theme['line_num_bg'], fg=theme['fg'],
+                                      font=("Consolas", 10), padx=10, pady=10,
+                                      yscrollcommand=code_scrollbar.set)
+        generated_code_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        code_scrollbar.config(command=generated_code_text.yview)
+        
+        # Show loading
+        generated_code_text.insert("1.0", "⏳ Generating code...\n\nPlease wait...")
+        generated_code_text.config(state='disabled')
+        
+        # Button frame
+        button_frame = tk.Frame(dialog, bg=theme['bg'])
+        button_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        
+        apply_btn = tk.Button(button_frame, text="✓ Apply to Editor", 
+                             state='disabled',
+                             bg="#0078d4", fg="white",
+                             padx=20, pady=5, font=("Arial", 9, "bold"))
+        apply_btn.pack(side=tk.LEFT, padx=5)
+        
+        copy_btn = tk.Button(button_frame, text="📋 Copy", 
+                            state='disabled',
+                            bg=theme['button_bg'], fg=theme['fg'],
+                            padx=20, pady=5)
+        copy_btn.pack(side=tk.LEFT, padx=5)
+        
+        close_btn = tk.Button(button_frame, text="Close", 
+                             command=dialog.destroy,
+                             bg=theme['button_bg'], fg=theme['fg'],
+                             padx=20, pady=5)
+        close_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Get context and file info
+        cursor_pos = tab_info['text_widget'].index(tk.INSERT)
+        context_start = tab_info['text_widget'].index(f"{cursor_pos} - 50 lines")
+        context_end = tab_info['text_widget'].index(f"{cursor_pos} + 20 lines")
+        context = tab_info['text_widget'].get(context_start, context_end)
+        
+        file_name = "untitled"
+        language = "python"
+        if tab_info['file_path']:
+            file_name = os.path.basename(tab_info['file_path'])
+            ext = os.path.splitext(file_name)[1]
+            language = 'python' if ext == '.py' else 'code'
+        
+        generated_code = [None]  # Use list to store in closure
+        
+        def apply_code():
+            """Apply generated code to editor"""
+            if generated_code[0]:
+                text_widget = tab_info['text_widget']
+                if replace_mode:
+                    text_widget.delete(start_pos, end_pos)
+                text_widget.insert(start_pos, generated_code[0])
+                dialog.destroy()
+                messagebox.showinfo("Success", "Code applied to editor!")
+        
+        def copy_code():
+            """Copy generated code to clipboard"""
+            if generated_code[0]:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(generated_code[0])
+                messagebox.showinfo("Copied", "Code copied to clipboard!")
+        
+        apply_btn.config(command=apply_code)
+        copy_btn.config(command=copy_code)
+        
+        # Generate code in background
+        def generate():
+            try:
+                result = self.ai_service.generate_code_from_description(
+                    requirement=requirement,
+                    context=context,
+                    file_name=file_name,
+                    language=language
+                )
+                
+                # Clean up result
+                if result.startswith('```'):
+                    lines = result.split('\n')
+                    result = '\n'.join(lines[1:-1]) if len(lines) > 2 else result
+                
+                generated_code[0] = result
+                
+                # Update UI
+                def update_ui():
+                    generated_code_text.config(state='normal')
+                    generated_code_text.delete("1.0", tk.END)
+                    generated_code_text.insert("1.0", result)
+                    generated_code_text.config(state='disabled')
+                    apply_btn.config(state='normal')
+                    copy_btn.config(state='normal')
+                
+                self.root.after(0, update_ui)
+                
+            except Exception as e:
+                def show_error():
+                    generated_code_text.config(state='normal')
+                    generated_code_text.delete("1.0", tk.END)
+                    generated_code_text.insert("1.0", f"❌ Error: {str(e)}")
+                    generated_code_text.config(state='disabled')
+                
+                self.root.after(0, show_error)
+        
+        thread = threading.Thread(target=generate, daemon=True)
+        thread.start()
+    
+    # ============================================================================
+    # STEP 7: CODE REFACTORING SUGGESTIONS
+    # ============================================================================
+    
     def refactor_selected_code(self):
-        """Refactor selected code (placeholder for future implementation)"""
-        messagebox.showinfo("Coming Soon", "Code refactoring will be implemented in Step 7!")
+        """Refactor selected code with AI suggestions"""
+        tab_info = self.get_current_tab_info()
+        if not tab_info:
+            return
+        
+        text_widget = tab_info['text_widget']
+        
+        # Clear any ghost text first
+        self.clear_ai_suggestion(text_widget)
+        
+        # Get selected text
+        try:
+            selected_code = text_widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+            selection_start = text_widget.index(tk.SEL_FIRST)
+            selection_end = text_widget.index(tk.SEL_LAST)
+        except:
+            # No selection, use entire file
+            response = messagebox.askyesno(
+                "No Selection",
+                "No code selected. Analyze entire file?"
+            )
+            if not response:
+                return
+            selected_code = text_widget.get("1.0", tk.END)
+            selection_start = "1.0"
+            selection_end = tk.END
+        
+        if not selected_code.strip():
+            messagebox.showwarning("Empty Selection", "Please select some code to refactor.")
+            return
+        
+        if not self.ai_service or not self.ai_service.is_available():
+            messagebox.showerror("AI Not Available", "AI service is not initialized.")
+            return
+        
+        # Show refactoring in AI panel
+        self.show_refactoring_panel(selected_code, selection_start, selection_end, tab_info)
+    
+    def show_refactoring_panel(self, code, start_pos, end_pos, tab_info):
+        """Show refactoring suggestions in AI panel"""
+        theme = self.themes[self.current_theme]
+        
+        # Create or show AI panel
+        if self.ai_explanation_panel is None:
+            self.ai_explanation_panel = tk.Frame(self.main_right_pane, bg=theme['bg'], width=400)
+            self.main_right_pane.add(self.ai_explanation_panel, minsize=350)
+            self.ai_panel_visible = True
+            
+            # Title bar
+            title_frame = tk.Frame(self.ai_explanation_panel, bg=theme['toolbar_bg'], height=35)
+            title_frame.pack(side=tk.TOP, fill=tk.X)
+            
+            tk.Label(title_frame, text="✨ AI Assistant", 
+                    bg=theme['toolbar_bg'], fg=theme['fg'],
+                    font=("Arial", 10, "bold"), padx=10).pack(side=tk.LEFT, pady=5)
+            
+            # Close button
+            close_btn = tk.Button(title_frame, text="✕", 
+                                 command=self.hide_ai_panel,
+                                 bg=theme['toolbar_bg'], fg=theme['fg'],
+                                 relief=tk.FLAT, padx=8, font=("Arial", 12, "bold"))
+            close_btn.pack(side=tk.RIGHT, padx=5)
+            
+            # Main content frame
+            self.ai_content_frame = tk.Frame(self.ai_explanation_panel, bg=theme['bg'])
+            self.ai_content_frame.pack(fill=tk.BOTH, expand=True)
+        
+        elif not self.ai_panel_visible:
+            self.main_right_pane.add(self.ai_explanation_panel, minsize=350)
+            self.ai_panel_visible = True
+        
+        # Clear previous content
+        for widget in self.ai_content_frame.winfo_children():
+            widget.destroy()
+        
+        # Title
+        title = tk.Label(self.ai_content_frame, text="🔧 Code Refactoring",
+                        bg=theme['bg'], fg=theme['fg'],
+                        font=("Arial", 11, "bold"), pady=10)
+        title.pack()
+        
+        # Analysis section
+        analysis_frame = tk.LabelFrame(self.ai_content_frame, text="Analysis & Suggestions:",
+                                       bg=theme['bg'], fg=theme['fg'],
+                                       font=("Arial", 9, "bold"), padx=5, pady=5)
+        analysis_frame.pack(fill=tk.BOTH, padx=10, pady=5, expand=True)
+        
+        analysis_scroll_frame = tk.Frame(analysis_frame, bg=theme['bg'])
+        analysis_scroll_frame.pack(fill=tk.BOTH, expand=True)
+        
+        analysis_scrollbar = tk.Scrollbar(analysis_scroll_frame)
+        analysis_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        analysis_text = tk.Text(analysis_scroll_frame, wrap=tk.WORD,
+                               bg=theme['bg'], fg=theme['fg'],
+                               font=("Arial", 10), padx=10, pady=10,
+                               yscrollcommand=analysis_scrollbar.set)
+        analysis_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        analysis_scrollbar.config(command=analysis_text.yview)
+        
+        # Show loading
+        analysis_text.insert("1.0", "⏳ Analyzing code...\n\nPlease wait...")
+        analysis_text.config(state='disabled')
+        
+        # Get file info
+        file_name = "untitled"
+        language = "python"
+        if tab_info['file_path']:
+            file_name = os.path.basename(tab_info['file_path'])
+            ext = os.path.splitext(file_name)[1]
+            language = 'python' if ext == '.py' else 'code'
+        
+        # Generate refactoring suggestions
+        def generate_suggestions():
+            try:
+                suggestions = self.ai_service.suggest_refactoring(
+                    code=code,
+                    file_name=file_name,
+                    language=language
+                )
+                
+                # Update UI
+                def update_ui():
+                    analysis_text.config(state='normal')
+                    analysis_text.delete("1.0", tk.END)
+                    analysis_text.insert("1.0", suggestions)
+                    analysis_text.config(state='disabled')
+                
+                self.root.after(0, update_ui)
+                
+            except Exception as e:
+                def show_error():
+                    analysis_text.config(state='normal')
+                    analysis_text.delete("1.0", tk.END)
+                    analysis_text.insert("1.0", f"❌ Error: {str(e)}")
+                    analysis_text.config(state='disabled')
+                
+                self.root.after(0, show_error)
+        
+        thread = threading.Thread(target=generate_suggestions, daemon=True)
+        thread.start()
+    
+    # ============================================================================
+    # STEP 8: BUG DETECTION & FIXES (Enhanced)
+    # ============================================================================
     
     def fix_selected_code(self):
-        """Fix/debug selected code (placeholder for future implementation)"""
-        messagebox.showinfo("Coming Soon", "Code fixing will be implemented in Step 8!")
+        """Fix/debug selected code with AI"""
+        tab_info = self.get_current_tab_info()
+        if not tab_info:
+            return
+        
+        text_widget = tab_info['text_widget']
+        
+        # Clear any ghost text first
+        self.clear_ai_suggestion(text_widget)
+        
+        # Get selected text
+        try:
+            selected_code = text_widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+            selection_start = text_widget.index(tk.SEL_FIRST)
+            selection_end = text_widget.index(tk.SEL_LAST)
+        except:
+            messagebox.showwarning("No Selection", "Please select code to analyze for bugs.")
+            return
+        
+        if not selected_code.strip():
+            messagebox.showwarning("Empty Selection", "Please select some code to fix.")
+            return
+        
+        if not self.ai_service or not self.ai_service.is_available():
+            messagebox.showerror("AI Not Available", "AI service is not initialized.")
+            return
+        
+        # Ask for error message if any
+        error_msg = simpledialog.askstring(
+            "Error Message",
+            "Enter error message (if any, or leave blank):",
+            parent=self.root
+        )
+        
+        # Show bug fix in AI panel
+        self.show_bug_fix_panel(selected_code, error_msg or "", selection_start, selection_end, tab_info)
+    
+    def scan_file_for_bugs(self):
+        """Scan entire file for potential bugs and issues"""
+        tab_info = self.get_current_tab_info()
+        if not tab_info:
+            messagebox.showwarning("No File", "No file is currently open.")
+            return
+        
+        if not self.ai_service or not self.ai_service.is_available():
+            messagebox.showerror("AI Not Available", "AI service is not initialized.")
+            return
+        
+        text_widget = tab_info['text_widget']
+        
+        # Clear any ghost text first
+        self.clear_ai_suggestion(text_widget)
+        
+        # Get all code
+        all_code = text_widget.get("1.0", tk.END)
+        
+        if not all_code.strip():
+            messagebox.showwarning("Empty File", "The file is empty.")
+            return
+        
+        # Show comprehensive bug scan in AI panel
+        self.show_bug_scan_panel(all_code, tab_info)
+    
+    def show_bug_scan_panel(self, code, tab_info):
+        """Show comprehensive bug scan with issue list and line highlighting"""
+        theme = self.themes[self.current_theme]
+        
+        # Create or show AI panel
+        if self.ai_explanation_panel is None:
+            self.ai_explanation_panel = tk.Frame(self.main_right_pane, bg=theme['bg'], width=400)
+            self.main_right_pane.add(self.ai_explanation_panel, minsize=350)
+            self.ai_panel_visible = True
+            
+            # Title bar
+            title_frame = tk.Frame(self.ai_explanation_panel, bg=theme['toolbar_bg'], height=35)
+            title_frame.pack(side=tk.TOP, fill=tk.X)
+            
+            tk.Label(title_frame, text="✨ AI Assistant", 
+                    bg=theme['toolbar_bg'], fg=theme['fg'],
+                    font=("Arial", 10, "bold"), padx=10).pack(side=tk.LEFT, pady=5)
+            
+            close_btn = tk.Button(title_frame, text="✕", 
+                                 command=self.hide_ai_panel,
+                                 bg=theme['toolbar_bg'], fg=theme['fg'],
+                                 relief=tk.FLAT, padx=8, font=("Arial", 12, "bold"))
+            close_btn.pack(side=tk.RIGHT, padx=5)
+            
+            self.ai_content_frame = tk.Frame(self.ai_explanation_panel, bg=theme['bg'])
+            self.ai_content_frame.pack(fill=tk.BOTH, expand=True)
+        
+        elif not self.ai_panel_visible:
+            self.main_right_pane.add(self.ai_explanation_panel, minsize=350)
+            self.ai_panel_visible = True
+        
+        # Clear previous content
+        for widget in self.ai_content_frame.winfo_children():
+            widget.destroy()
+        
+        # Title
+        title = tk.Label(self.ai_content_frame, text="🔍 Bug Detection Scan",
+                        bg=theme['bg'], fg=theme['fg'],
+                        font=("Arial", 11, "bold"), pady=10)
+        title.pack()
+        
+        # Status label
+        status_label = tk.Label(self.ai_content_frame, text="Scanning code for issues...",
+                               bg=theme['bg'], fg="#ffaa00",
+                               font=("Arial", 9, "italic"))
+        status_label.pack()
+        
+        # Bug issues section
+        issues_frame = tk.LabelFrame(self.ai_content_frame, text="Issues Found:",
+                                     bg=theme['bg'], fg=theme['fg'],
+                                     font=("Arial", 9, "bold"), padx=5, pady=5)
+        issues_frame.pack(fill=tk.BOTH, padx=10, pady=5, expand=True)
+        
+        issues_scroll_frame = tk.Frame(issues_frame, bg=theme['bg'])
+        issues_scroll_frame.pack(fill=tk.BOTH, expand=True)
+        
+        issues_scrollbar = tk.Scrollbar(issues_scroll_frame)
+        issues_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        issues_text = tk.Text(issues_scroll_frame, wrap=tk.WORD,
+                             bg=theme['bg'], fg=theme['fg'],
+                             font=("Consolas", 9), padx=10, pady=10,
+                             yscrollcommand=issues_scrollbar.set)
+        issues_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        issues_scrollbar.config(command=issues_text.yview)
+        
+        # Configure tags for issues
+        issues_text.tag_configure("error", foreground="#ff4444", font=("Consolas", 9, "bold"))
+        issues_text.tag_configure("warning", foreground="#ffaa00", font=("Consolas", 9, "bold"))
+        issues_text.tag_configure("info", foreground="#4488ff", font=("Consolas", 9, "bold"))
+        issues_text.tag_configure("line", foreground="#888888")
+        issues_text.tag_configure("clickable", foreground="#4488ff", underline=True)
+        
+        # Show loading
+        issues_text.insert("1.0", "⏳ Analyzing code...\n\nPlease wait...", "info")
+        issues_text.config(state='disabled')
+        
+        # Clear any existing highlights
+        text_widget = tab_info['text_widget']
+        text_widget.tag_remove("bug_highlight", "1.0", tk.END)
+        text_widget.tag_configure("bug_highlight", background="#ff4444", foreground="#ffffff")
+        
+        # Get file info
+        file_name = "untitled"
+        language = "python"
+        if tab_info['file_path']:
+            file_name = os.path.basename(tab_info['file_path'])
+            ext = os.path.splitext(file_name)[1]
+            language = 'python' if ext == '.py' else 'code'
+        
+        # Scan for bugs
+        def scan_bugs():
+            try:
+                # Use detect_and_fix_bugs from AI service
+                analysis = self.ai_service.detect_and_fix_bugs(
+                    code=code,
+                    error_message="",
+                    file_name=file_name,
+                    language=language
+                )
+                
+                # Parse the analysis to extract issues
+                issues = self.parse_bug_analysis(analysis)
+                
+                # Update UI
+                def update_ui():
+                    issues_text.config(state='normal')
+                    issues_text.delete("1.0", tk.END)
+                    
+                    if not issues:
+                        issues_text.insert("1.0", "✓ No critical issues found!\n\n", "info")
+                        issues_text.insert(tk.END, analysis)
+                        status_label.config(text="Scan complete - No critical issues", fg="#00ff00")
+                    else:
+                        status_label.config(text=f"Scan complete - {len(issues)} issue(s) found", fg="#ff4444")
+                        
+                        for idx, issue in enumerate(issues, 1):
+                            # Issue header
+                            severity = issue.get('severity', 'warning')
+                            if severity == 'error':
+                                icon = "❌"
+                                tag = "error"
+                            elif severity == 'warning':
+                                icon = "⚠️"
+                                tag = "warning"
+                            else:
+                                icon = "ℹ️"
+                                tag = "info"
+                            
+                            issues_text.insert(tk.END, f"{icon} Issue {idx}: ", tag)
+                            issues_text.insert(tk.END, f"{issue.get('title', 'Unknown')}\n", tag)
+                            
+                            # Line number (clickable)
+                            if 'line' in issue:
+                                line_num = issue['line']
+                                issues_text.insert(tk.END, f"   Line {line_num}", "line")
+                                
+                                # Make it clickable
+                                start_idx = issues_text.index("end-1c linestart")
+                                end_idx = issues_text.index("end-1c lineend")
+                                issues_text.tag_add(f"click_{idx}", start_idx, end_idx)
+                                issues_text.tag_bind(f"click_{idx}", "<Button-1>", 
+                                                    lambda e, l=line_num: self.jump_to_line(l, tab_info))
+                                issues_text.tag_configure(f"click_{idx}", foreground="#4488ff", underline=True)
+                                issues_text.insert(tk.END, " (click to jump)\n")
+                                
+                                # Highlight the line in editor
+                                text_widget.tag_add("bug_highlight", f"{line_num}.0", f"{line_num}.end")
+                            else:
+                                issues_text.insert(tk.END, "\n")
+                            
+                            # Description
+                            issues_text.insert(tk.END, f"   {issue.get('description', 'No description')}\n")
+                            
+                            # Fix suggestion
+                            if 'fix' in issue:
+                                issues_text.insert(tk.END, f"   💡 Fix: {issue['fix']}\n", "info")
+                            
+                            issues_text.insert(tk.END, "\n")
+                        
+                        # Add full analysis at the end
+                        issues_text.insert(tk.END, "\n" + "="*50 + "\n")
+                        issues_text.insert(tk.END, "Full Analysis:\n\n")
+                        issues_text.insert(tk.END, analysis)
+                    
+                    issues_text.config(state='disabled')
+                
+                self.root.after(0, update_ui)
+                
+            except Exception as e:
+                def show_error():
+                    issues_text.config(state='normal')
+                    issues_text.delete("1.0", tk.END)
+                    issues_text.insert("1.0", f"❌ Error during scan: {str(e)}", "error")
+                    issues_text.config(state='disabled')
+                    status_label.config(text="Scan failed", fg="#ff4444")
+                
+                self.root.after(0, show_error)
+        
+        thread = threading.Thread(target=scan_bugs, daemon=True)
+        thread.start()
+    
+    def parse_bug_analysis(self, analysis):
+        """Parse AI analysis to extract structured issues"""
+        issues = []
+        
+        # Try to extract issues from the analysis
+        # This is a simple parser - can be enhanced based on AI response format
+        lines = analysis.split('\n')
+        current_issue = None
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Look for common issue indicators
+            if any(keyword in line.lower() for keyword in ['error', 'bug', 'issue', 'problem', 'warning']):
+                if current_issue:
+                    issues.append(current_issue)
+                
+                current_issue = {
+                    'title': line[:80],
+                    'description': '',
+                    'severity': 'error' if 'error' in line.lower() else 'warning'
+                }
+            
+            # Look for line numbers
+            if current_issue and 'line' in line.lower():
+                import re
+                line_match = re.search(r'line[:\s]+(\d+)', line, re.IGNORECASE)
+                if line_match:
+                    current_issue['line'] = int(line_match.group(1))
+            
+            # Look for fix suggestions
+            if current_issue and any(keyword in line.lower() for keyword in ['fix', 'solution', 'suggest']):
+                current_issue['fix'] = line
+            
+            # Add to description
+            if current_issue and line and not line.startswith('#'):
+                current_issue['description'] += line + ' '
+        
+        if current_issue:
+            issues.append(current_issue)
+        
+        return issues
+    
+    def jump_to_line(self, line_number, tab_info):
+        """Jump to a specific line in the editor"""
+        text_widget = tab_info['text_widget']
+        
+        # Move cursor to line
+        text_widget.mark_set(tk.INSERT, f"{line_number}.0")
+        text_widget.see(f"{line_number}.0")
+        
+        # Highlight the line temporarily
+        text_widget.tag_remove("current_line_highlight", "1.0", tk.END)
+        text_widget.tag_configure("current_line_highlight", background="#ffff00", foreground="#000000")
+        text_widget.tag_add("current_line_highlight", f"{line_number}.0", f"{line_number}.end")
+        
+        # Remove highlight after 2 seconds
+        def remove_highlight():
+            text_widget.tag_remove("current_line_highlight", "1.0", tk.END)
+        
+        self.root.after(2000, remove_highlight)
+        
+        # Focus the text widget
+        text_widget.focus_set()
+    
+    def show_bug_fix_panel(self, code, error_message, start_pos, end_pos, tab_info):
+        """Show bug detection and fixes in AI panel"""
+        theme = self.themes[self.current_theme]
+        
+        # Create or show AI panel
+        if self.ai_explanation_panel is None:
+            self.ai_explanation_panel = tk.Frame(self.main_right_pane, bg=theme['bg'], width=400)
+            self.main_right_pane.add(self.ai_explanation_panel, minsize=350)
+            self.ai_panel_visible = True
+            
+            # Title bar
+            title_frame = tk.Frame(self.ai_explanation_panel, bg=theme['toolbar_bg'], height=35)
+            title_frame.pack(side=tk.TOP, fill=tk.X)
+            
+            tk.Label(title_frame, text="✨ AI Assistant", 
+                    bg=theme['toolbar_bg'], fg=theme['fg'],
+                    font=("Arial", 10, "bold"), padx=10).pack(side=tk.LEFT, pady=5)
+            
+            close_btn = tk.Button(title_frame, text="✕", 
+                                 command=self.hide_ai_panel,
+                                 bg=theme['toolbar_bg'], fg=theme['fg'],
+                                 relief=tk.FLAT, padx=8, font=("Arial", 12, "bold"))
+            close_btn.pack(side=tk.RIGHT, padx=5)
+            
+            self.ai_content_frame = tk.Frame(self.ai_explanation_panel, bg=theme['bg'])
+            self.ai_content_frame.pack(fill=tk.BOTH, expand=True)
+        
+        elif not self.ai_panel_visible:
+            self.main_right_pane.add(self.ai_explanation_panel, minsize=350)
+            self.ai_panel_visible = True
+        
+        # Clear previous content
+        for widget in self.ai_content_frame.winfo_children():
+            widget.destroy()
+        
+        # Title
+        title = tk.Label(self.ai_content_frame, text="🐛 Bug Detection & Fixes",
+                        bg=theme['bg'], fg=theme['fg'],
+                        font=("Arial", 11, "bold"), pady=10)
+        title.pack()
+        
+        # Bug analysis section
+        bug_frame = tk.LabelFrame(self.ai_content_frame, text="Analysis & Fixes:",
+                                  bg=theme['bg'], fg=theme['fg'],
+                                  font=("Arial", 9, "bold"), padx=5, pady=5)
+        bug_frame.pack(fill=tk.BOTH, padx=10, pady=5, expand=True)
+        
+        bug_scroll_frame = tk.Frame(bug_frame, bg=theme['bg'])
+        bug_scroll_frame.pack(fill=tk.BOTH, expand=True)
+        
+        bug_scrollbar = tk.Scrollbar(bug_scroll_frame)
+        bug_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        bug_text = tk.Text(bug_scroll_frame, wrap=tk.WORD,
+                          bg=theme['bg'], fg=theme['fg'],
+                          font=("Arial", 10), padx=10, pady=10,
+                          yscrollcommand=bug_scrollbar.set)
+        bug_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        bug_scrollbar.config(command=bug_text.yview)
+        
+        # Show loading
+        bug_text.insert("1.0", "⏳ Analyzing code for bugs...\n\nPlease wait...")
+        bug_text.config(state='disabled')
+        
+        # Get file info
+        file_name = "untitled"
+        language = "python"
+        if tab_info['file_path']:
+            file_name = os.path.basename(tab_info['file_path'])
+            ext = os.path.splitext(file_name)[1]
+            language = 'python' if ext == '.py' else 'code'
+        
+        # Detect and fix bugs
+        def analyze_bugs():
+            try:
+                analysis = self.ai_service.detect_and_fix_bugs(
+                    code=code,
+                    error_message=error_message,
+                    file_name=file_name,
+                    language=language
+                )
+                
+                # Update UI
+                def update_ui():
+                    bug_text.config(state='normal')
+                    bug_text.delete("1.0", tk.END)
+                    bug_text.insert("1.0", analysis)
+                    bug_text.config(state='disabled')
+                
+                self.root.after(0, update_ui)
+                
+            except Exception as e:
+                def show_error():
+                    bug_text.config(state='normal')
+                    bug_text.delete("1.0", tk.END)
+                    bug_text.insert("1.0", f"❌ Error: {str(e)}")
+                    bug_text.config(state='disabled')
+                
+                self.root.after(0, show_error)
+        
+        thread = threading.Thread(target=analyze_bugs, daemon=True)
+        thread.start()
+    
+    def generate_documentation(self):
+        """Generate documentation for selected code"""
+        tab_info = self.get_current_tab_info()
+        if not tab_info:
+            return
+        
+        text_widget = tab_info['text_widget']
+        
+        # Clear any ghost text first
+        self.clear_ai_suggestion(text_widget)
+        
+        # Get selected text
+        try:
+            selected_code = text_widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+        except:
+            messagebox.showwarning("No Selection", "Please select code to document.")
+            return
+        
+        if not selected_code.strip():
+            messagebox.showwarning("Empty Selection", "Please select some code.")
+            return
+        
+        if not self.ai_service or not self.ai_service.is_available():
+            messagebox.showerror("AI Not Available", "AI service is not initialized.")
+            return
+        
+        messagebox.showinfo("Coming Soon", "Documentation generation will be fully implemented soon!\n\nFor now, use 'Explain Code' to understand your code.")
+    
+    # ============================================================================
+    # STEP 9: AI CHAT INTERFACE
+    # ============================================================================
+    
+    def show_ai_chat(self):
+        """Show AI chat interface in right panel"""
+        if not self.ai_service or not self.ai_service.is_available():
+            messagebox.showerror("AI Not Available", "AI service is not initialized.")
+            return
+        
+        theme = self.themes[self.current_theme]
+        
+        # Create or show AI panel
+        if self.ai_explanation_panel is None:
+            self.ai_explanation_panel = tk.Frame(self.main_right_pane, bg=theme['bg'], width=400)
+            self.main_right_pane.add(self.ai_explanation_panel, minsize=350)
+            self.ai_panel_visible = True
+            
+            # Title bar
+            title_frame = tk.Frame(self.ai_explanation_panel, bg=theme['toolbar_bg'], height=35)
+            title_frame.pack(side=tk.TOP, fill=tk.X)
+            
+            tk.Label(title_frame, text="✨ AI Assistant", 
+                    bg=theme['toolbar_bg'], fg=theme['fg'],
+                    font=("Arial", 10, "bold"), padx=10).pack(side=tk.LEFT, pady=5)
+            
+            close_btn = tk.Button(title_frame, text="✕", 
+                                 command=self.hide_ai_panel,
+                                 bg=theme['toolbar_bg'], fg=theme['fg'],
+                                 relief=tk.FLAT, padx=8, font=("Arial", 12, "bold"))
+            close_btn.pack(side=tk.RIGHT, padx=5)
+            
+            self.ai_content_frame = tk.Frame(self.ai_explanation_panel, bg=theme['bg'])
+            self.ai_content_frame.pack(fill=tk.BOTH, expand=True)
+        
+        elif not self.ai_panel_visible:
+            self.main_right_pane.add(self.ai_explanation_panel, minsize=350)
+            self.ai_panel_visible = True
+        
+        # Clear previous content
+        for widget in self.ai_content_frame.winfo_children():
+            widget.destroy()
+        
+        # Create chat interface
+        self.create_chat_interface(self.ai_content_frame, theme)
+    
+    def create_chat_interface(self, parent, theme):
+        """Create the chat interface UI"""
+        # Title
+        title_frame = tk.Frame(parent, bg=theme['bg'])
+        title_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Label(title_frame, text="💬 AI Chat",
+                bg=theme['bg'], fg=theme['fg'],
+                font=("Arial", 11, "bold")).pack(side=tk.LEFT)
+        
+        # Clear chat button
+        clear_btn = tk.Button(title_frame, text="Clear",
+                             command=self.clear_chat,
+                             bg=theme['button_bg'], fg=theme['fg'],
+                             relief=tk.FLAT, padx=10)
+        clear_btn.pack(side=tk.RIGHT)
+        
+        # Chat history display
+        chat_frame = tk.Frame(parent, bg=theme['bg'])
+        chat_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        chat_scroll = tk.Scrollbar(chat_frame)
+        chat_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.chat_display = tk.Text(chat_frame, wrap=tk.WORD,
+                                    bg=theme['bg'], fg=theme['fg'],
+                                    font=("Arial", 10), padx=10, pady=10,
+                                    yscrollcommand=chat_scroll.set,
+                                    state='disabled')
+        self.chat_display.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        chat_scroll.config(command=self.chat_display.yview)
+        
+        # Configure tags for chat messages
+        self.chat_display.tag_configure("user", foreground="#4488ff", font=("Arial", 10, "bold"))
+        self.chat_display.tag_configure("assistant", foreground="#00ff88", font=("Arial", 10, "bold"))
+        self.chat_display.tag_configure("code", background=theme['line_num_bg'], 
+                                       font=("Consolas", 9), foreground="#ffaa00")
+        self.chat_display.tag_configure("timestamp", foreground="#888888", font=("Arial", 8))
+        
+        # Restore chat history if exists
+        if self.chat_history:
+            self.chat_display.config(state='normal')
+            for msg in self.chat_history:
+                self.display_chat_message(msg['role'], msg['content'], restore=True)
+            self.chat_display.config(state='disabled')
+        else:
+            # Welcome message
+            self.chat_display.config(state='normal')
+            self.chat_display.insert("1.0", "👋 Welcome to AI Chat!\n\n", "assistant")
+            self.chat_display.insert(tk.END, "Ask me anything about your code. You can:\n")
+            self.chat_display.insert(tk.END, "• Ask questions about programming concepts\n")
+            self.chat_display.insert(tk.END, "• Get help with debugging\n")
+            self.chat_display.insert(tk.END, "• Request code reviews\n")
+            self.chat_display.insert(tk.END, "• Attach code by selecting it first\n\n")
+            self.chat_display.config(state='disabled')
+        
+        # Input area
+        input_frame = tk.Frame(parent, bg=theme['bg'])
+        input_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Context indicator
+        self.context_label = tk.Label(input_frame, text="", 
+                                      bg=theme['bg'], fg="#ffaa00",
+                                      font=("Arial", 8))
+        self.context_label.pack(fill=tk.X)
+        
+        # Input box
+        input_container = tk.Frame(input_frame, bg=theme['bg'])
+        input_container.pack(fill=tk.X, pady=5)
+        
+        self.chat_input = tk.Text(input_container, height=3, wrap=tk.WORD,
+                                  bg=theme['line_num_bg'], fg=theme['fg'],
+                                  font=("Arial", 10), padx=5, pady=5)
+        self.chat_input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Button container
+        btn_container = tk.Frame(input_container, bg=theme['bg'])
+        btn_container.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
+        
+        # Send button
+        send_btn = tk.Button(btn_container, text="Send",
+                            command=self.send_chat_message,
+                            bg="#0078d4", fg="white",
+                            font=("Arial", 9, "bold"),
+                            padx=15, pady=5)
+        send_btn.pack(pady=2)
+        
+        # Attach code button
+        attach_btn = tk.Button(btn_container, text="📎",
+                              command=self.attach_code_to_chat,
+                              bg=theme['button_bg'], fg=theme['fg'],
+                              font=("Arial", 10),
+                              padx=10, pady=2)
+        attach_btn.pack(pady=2)
+        
+        # Bind Enter to send (Shift+Enter for new line)
+        self.chat_input.bind("<Return>", lambda e: self.send_chat_message() or "break")
+        self.chat_input.bind("<Shift-Return>", lambda e: None)  # Allow newline with Shift+Enter
+        
+        self.chat_input.focus_set()
+    
+    def attach_code_to_chat(self):
+        """Attach selected code to the chat context"""
+        tab_info = self.get_current_tab_info()
+        if not tab_info:
+            self.context_label.config(text="⚠ No file open")
+            return
+        
+        text_widget = tab_info['text_widget']
+        
+        try:
+            selected_code = text_widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+            if selected_code.strip():
+                # Store in chat input as context
+                current_text = self.chat_input.get("1.0", tk.END).strip()
+                if current_text:
+                    self.chat_input.insert("1.0", f"[Code attached]\n```\n{selected_code}\n```\n\n")
+                else:
+                    self.chat_input.insert("1.0", f"[Code attached]\n```\n{selected_code}\n```\n")
+                self.context_label.config(text=f"📎 Code attached ({len(selected_code)} chars)")
+            else:
+                self.context_label.config(text="⚠ No code selected")
+        except:
+            # No selection, attach entire file context
+            file_content = text_widget.get("1.0", tk.END).strip()
+            if len(file_content) > 2000:
+                file_content = file_content[:2000] + "\n... (truncated)"
+            
+            file_name = "untitled"
+            if tab_info['file_path']:
+                file_name = os.path.basename(tab_info['file_path'])
+            
+            current_text = self.chat_input.get("1.0", tk.END).strip()
+            if current_text:
+                self.chat_input.insert("1.0", f"[File: {file_name}]\n```\n{file_content}\n```\n\n")
+            else:
+                self.chat_input.insert("1.0", f"[File: {file_name}]\n```\n{file_content}\n```\n")
+            self.context_label.config(text=f"📎 File attached: {file_name}")
+    
+    def send_chat_message(self):
+        """Send a message in the chat"""
+        message = self.chat_input.get("1.0", tk.END).strip()
+        if not message:
+            return
+        
+        # Clear input
+        self.chat_input.delete("1.0", tk.END)
+        self.context_label.config(text="")
+        
+        # Display user message
+        self.display_chat_message("user", message)
+        
+        # Add to history
+        self.chat_history.append({"role": "user", "content": message})
+        
+        # Show thinking indicator
+        self.chat_display.config(state='normal')
+        self.chat_display.insert(tk.END, "\n")
+        self.chat_display.insert(tk.END, "AI: ", "assistant")
+        self.chat_display.insert(tk.END, "💭 Thinking...\n")
+        self.chat_display.see(tk.END)
+        self.chat_display.config(state='disabled')
+        
+        # Get response from AI
+        def get_response():
+            try:
+                # Prepare conversation context
+                from .prompt_templates import PromptTemplates
+                
+                # Get file context if available
+                tab_info = self.get_current_tab_info()
+                file_context = ""
+                if tab_info and tab_info['file_path']:
+                    file_name = os.path.basename(tab_info['file_path'])
+                    file_context = f"Current file: {file_name}"
+                
+                # Build conversation history for context
+                conversation = "\n".join([
+                    f"{msg['role'].capitalize()}: {msg['content']}"
+                    for msg in self.chat_history[-5:]  # Last 5 messages for context
+                ])
+                
+                prompt = PromptTemplates.get_chat_prompt()
+                messages = prompt.format_messages(
+                    conversation=conversation,
+                    file_context=file_context,
+                    user_message=message
+                )
+                
+                response = self.ai_service.llm.invoke(messages)
+                ai_response = response.content
+                
+                # Update UI
+                def update_ui():
+                    # Remove thinking indicator
+                    self.chat_display.config(state='normal')
+                    # Find and remove the thinking message
+                    content = self.chat_display.get("1.0", tk.END)
+                    if "💭 Thinking..." in content:
+                        # Remove the last line with thinking
+                        self.chat_display.delete("end-2l", "end-1l")
+                    
+                    # Display AI response
+                    self.display_chat_message("assistant", ai_response)
+                    self.chat_display.config(state='disabled')
+                    
+                    # Add to history
+                    self.chat_history.append({"role": "assistant", "content": ai_response})
+                
+                self.root.after(0, update_ui)
+                
+            except Exception as e:
+                def show_error():
+                    self.chat_display.config(state='normal')
+                    # Remove thinking indicator
+                    content = self.chat_display.get("1.0", tk.END)
+                    if "💭 Thinking..." in content:
+                        self.chat_display.delete("end-2l", "end-1l")
+                    self.chat_display.insert(tk.END, f"❌ Error: {str(e)}\n")
+                    self.chat_display.see(tk.END)
+                    self.chat_display.config(state='disabled')
+                
+                self.root.after(0, show_error)
+        
+        # Run in background
+        thread = threading.Thread(target=get_response, daemon=True)
+        thread.start()
+    
+    def display_chat_message(self, role, content, restore=False):
+        """Display a message in the chat"""
+        from datetime import datetime
+        
+        self.chat_display.config(state='normal')
+        
+        if not restore:
+            self.chat_display.insert(tk.END, "\n")
+        
+        # Message header
+        if role == "user":
+            self.chat_display.insert(tk.END, "You: ", "user")
+        else:
+            self.chat_display.insert(tk.END, "AI: ", "assistant")
+        
+        # Timestamp
+        if not restore:
+            timestamp = datetime.now().strftime("%H:%M")
+            self.chat_display.insert(tk.END, f"({timestamp})\n", "timestamp")
+        else:
+            self.chat_display.insert(tk.END, "\n")
+        
+        # Message content with code block formatting
+        lines = content.split('\n')
+        in_code_block = False
+        
+        for line in lines:
+            if line.strip().startswith('```'):
+                in_code_block = not in_code_block
+                continue
+            
+            if in_code_block:
+                self.chat_display.insert(tk.END, line + "\n", "code")
+            else:
+                self.chat_display.insert(tk.END, line + "\n")
+        
+        self.chat_display.see(tk.END)
+        self.chat_display.config(state='disabled')
+    
+    def clear_chat(self):
+        """Clear chat history"""
+        response = messagebox.askyesno(
+            "Clear Chat",
+            "Are you sure you want to clear the chat history?"
+        )
+        
+        if response:
+            self.chat_history = []
+            self.chat_display.config(state='normal')
+            self.chat_display.delete("1.0", tk.END)
+            self.chat_display.insert("1.0", "Chat cleared. Start a new conversation!\n\n", "assistant")
+            self.chat_display.config(state='disabled')
 
 def main():
     root = tk.Tk()
