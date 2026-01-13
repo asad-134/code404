@@ -28,6 +28,8 @@ class CodeEditor:
         self.ai_explanation_panel = None
         self.ai_panel_visible = False
         self.chat_history = []  # Store chat conversation history
+        self.workspace_index = {}  # Store indexed workspace files
+        self.index_status = "Not indexed"  # Indexing status
         
         # Define themes
         self.themes = {
@@ -190,6 +192,16 @@ class CodeEditor:
         ai_menu.add_command(label="AI Chat", command=self.show_ai_chat, accelerator="Ctrl+Shift+C")
         ai_menu.add_separator()
         ai_menu.add_command(label="Generate Documentation", command=self.generate_documentation)
+        
+        # Project menu
+        project_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Project", menu=project_menu)
+        project_menu.add_command(label="Index Workspace", command=self.index_workspace, accelerator="Ctrl+Shift+X")
+        project_menu.add_command(label="Search Code Semantically", command=self.semantic_code_search, accelerator="Ctrl+Shift+S")
+        project_menu.add_separator()
+        project_menu.add_command(label="Find Similar Code", command=self.find_similar_code)
+        project_menu.add_command(label="Project Overview", command=self.show_project_overview)
+        project_menu.add_command(label="Analyze Dependencies", command=self.analyze_dependencies)
         
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -964,6 +976,10 @@ class CodeEditor:
         self.root.bind("<Control-Shift-F>", lambda e: self.fix_selected_code())
         self.root.bind("<Control-Shift-B>", lambda e: self.scan_file_for_bugs())
         self.root.bind("<Control-Shift-C>", lambda e: self.show_ai_chat())
+        
+        # Project shortcuts
+        self.root.bind("<Control-Shift-X>", lambda e: self.index_workspace())
+        self.root.bind("<Control-Shift-S>", lambda e: self.semantic_code_search())
         
         # Tab switching
         self.root.bind("<Control-Tab>", lambda e: self.next_tab())
@@ -3200,6 +3216,518 @@ Ctrl+W         Close Current Tab
             self.chat_display.delete("1.0", tk.END)
             self.chat_display.insert("1.0", "Chat cleared. Start a new conversation!\n\n", "assistant")
             self.chat_display.config(state='disabled')
+    
+    # ============================================================================
+    # STEP 10: MULTI-FILE CONTEXT & WORKSPACE ANALYSIS
+    # ============================================================================
+    
+    def index_workspace(self):
+        """Index all Python files in the workspace for semantic search"""
+        workspace_path = os.path.dirname(os.path.abspath(__file__))
+        
+        # Show indexing dialog
+        self.show_indexing_progress(workspace_path)
+    
+    def show_indexing_progress(self, workspace_path):
+        """Show progress dialog while indexing workspace"""
+        theme = self.themes[self.current_theme]
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Indexing Workspace")
+        dialog.geometry("500x300")
+        dialog.configure(bg=theme['bg'])
+        dialog.transient(self.root)
+        
+        # Title
+        title = tk.Label(dialog, text="🔍 Indexing Workspace",
+                        bg=theme['bg'], fg=theme['fg'],
+                        font=("Arial", 12, "bold"), pady=10)
+        title.pack()
+        
+        # Status label
+        status_label = tk.Label(dialog, text="Scanning files...",
+                               bg=theme['bg'], fg=theme['fg'],
+                               font=("Arial", 10), pady=5)
+        status_label.pack()
+        
+        # Progress info
+        progress_text = tk.Text(dialog, height=10, wrap=tk.WORD,
+                               bg=theme['line_num_bg'], fg=theme['fg'],
+                               font=("Consolas", 9), padx=10, pady=10)
+        progress_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Close button (initially disabled)
+        close_btn = tk.Button(dialog, text="Close", state='disabled',
+                             command=dialog.destroy,
+                             bg=theme['button_bg'], fg=theme['fg'],
+                             padx=20, pady=5)
+        close_btn.pack(pady=10)
+        
+        def update_progress(message):
+            progress_text.insert(tk.END, message + "\n")
+            progress_text.see(tk.END)
+        
+        def index_files():
+            try:
+                update_progress(f"📁 Workspace: {workspace_path}")
+                update_progress("")
+                
+                # Find all Python files
+                python_files = []
+                for root, dirs, files in os.walk(workspace_path):
+                    # Skip common directories
+                    dirs[:] = [d for d in dirs if d not in ['__pycache__', '.git', 'venv', 'node_modules', '.vscode']]
+                    
+                    for file in files:
+                        if file.endswith('.py'):
+                            file_path = os.path.join(root, file)
+                            python_files.append(file_path)
+                
+                update_progress(f"✓ Found {len(python_files)} Python files")
+                update_progress("")
+                
+                # Index each file
+                self.workspace_index = {}
+                for i, file_path in enumerate(python_files):
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        
+                        # Extract metadata
+                        rel_path = os.path.relpath(file_path, workspace_path)
+                        lines = content.split('\n')
+                        
+                        # Extract functions and classes
+                        functions = []
+                        classes = []
+                        imports = []
+                        
+                        for line_num, line in enumerate(lines, 1):
+                            stripped = line.strip()
+                            if stripped.startswith('def '):
+                                func_name = stripped.split('(')[0].replace('def ', '').strip()
+                                functions.append({'name': func_name, 'line': line_num})
+                            elif stripped.startswith('class '):
+                                class_name = stripped.split('(')[0].split(':')[0].replace('class ', '').strip()
+                                classes.append({'name': class_name, 'line': line_num})
+                            elif stripped.startswith(('import ', 'from ')):
+                                imports.append(stripped)
+                        
+                        # Store indexed data
+                        self.workspace_index[file_path] = {
+                            'path': file_path,
+                            'rel_path': rel_path,
+                            'content': content,
+                            'lines': len(lines),
+                            'functions': functions,
+                            'classes': classes,
+                            'imports': imports,
+                            'size': len(content)
+                        }
+                        
+                        self.root.after(0, lambda p=rel_path: update_progress(f"  ✓ {p}"))
+                        
+                    except Exception as e:
+                        self.root.after(0, lambda p=rel_path, err=str(e): 
+                                      update_progress(f"  ✗ {p}: {err}"))
+                
+                # Summary
+                total_lines = sum(data['lines'] for data in self.workspace_index.values())
+                total_functions = sum(len(data['functions']) for data in self.workspace_index.values())
+                total_classes = sum(len(data['classes']) for data in self.workspace_index.values())
+                
+                self.root.after(0, lambda: update_progress(""))
+                self.root.after(0, lambda: update_progress("=" * 50))
+                self.root.after(0, lambda: update_progress("✅ Indexing Complete!"))
+                self.root.after(0, lambda: update_progress(""))
+                self.root.after(0, lambda: update_progress(f"📊 Statistics:"))
+                self.root.after(0, lambda: update_progress(f"  • {len(self.workspace_index)} files indexed"))
+                self.root.after(0, lambda: update_progress(f"  • {total_lines:,} lines of code"))
+                self.root.after(0, lambda: update_progress(f"  • {total_functions} functions"))
+                self.root.after(0, lambda: update_progress(f"  • {total_classes} classes"))
+                
+                self.index_status = f"Indexed: {len(self.workspace_index)} files"
+                
+                self.root.after(0, lambda: status_label.config(text="✅ Indexing complete!"))
+                self.root.after(0, lambda: close_btn.config(state='normal'))
+                
+            except Exception as e:
+                self.root.after(0, lambda: update_progress(f"\n❌ Error: {str(e)}"))
+                self.root.after(0, lambda: status_label.config(text="❌ Indexing failed"))
+                self.root.after(0, lambda: close_btn.config(state='normal'))
+        
+        # Run indexing in background
+        thread = threading.Thread(target=index_files, daemon=True)
+        thread.start()
+    
+    def semantic_code_search(self):
+        """Search code across workspace semantically"""
+        if not self.workspace_index:
+            response = messagebox.askyesno(
+                "Workspace Not Indexed",
+                "Workspace needs to be indexed first. Index now?"
+            )
+            if response:
+                self.index_workspace()
+            return
+        
+        theme = self.themes[self.current_theme]
+        
+        # Create search dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Semantic Code Search")
+        dialog.geometry("700x600")
+        dialog.configure(bg=theme['bg'])
+        
+        # Title
+        title_frame = tk.Frame(dialog, bg=theme['toolbar_bg'])
+        title_frame.pack(fill=tk.X)
+        
+        tk.Label(title_frame, text="🔍 Semantic Code Search",
+                bg=theme['toolbar_bg'], fg=theme['fg'],
+                font=("Arial", 11, "bold"), padx=10, pady=8).pack(side=tk.LEFT)
+        
+        tk.Label(title_frame, text=f"📊 {len(self.workspace_index)} files indexed",
+                bg=theme['toolbar_bg'], fg="#00ff88",
+                font=("Arial", 9), padx=10).pack(side=tk.RIGHT)
+        
+        # Search input
+        search_frame = tk.Frame(dialog, bg=theme['bg'])
+        search_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        tk.Label(search_frame, text="Search Query:",
+                bg=theme['bg'], fg=theme['fg'],
+                font=("Arial", 10)).pack(anchor=tk.W)
+        
+        search_entry = tk.Entry(search_frame, font=("Arial", 10),
+                               bg=theme['line_num_bg'], fg=theme['fg'])
+        search_entry.pack(fill=tk.X, pady=5)
+        search_entry.focus_set()
+        
+        # Search options
+        options_frame = tk.Frame(dialog, bg=theme['bg'])
+        options_frame.pack(fill=tk.X, padx=10)
+        
+        search_type = tk.StringVar(value="all")
+        tk.Radiobutton(options_frame, text="All", variable=search_type, value="all",
+                      bg=theme['bg'], fg=theme['fg'], selectcolor=theme['button_bg']).pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(options_frame, text="Functions", variable=search_type, value="functions",
+                      bg=theme['bg'], fg=theme['fg'], selectcolor=theme['button_bg']).pack(side=tk.LEFT, padx=5)
+        tk.Radiobutton(options_frame, text="Classes", variable=search_type, value="classes",
+                      bg=theme['bg'], fg=theme['fg'], selectcolor=theme['button_bg']).pack(side=tk.LEFT, padx=5)
+        
+        # Results area
+        results_frame = tk.LabelFrame(dialog, text="Results:",
+                                     bg=theme['bg'], fg=theme['fg'],
+                                     font=("Arial", 9, "bold"))
+        results_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        results_scroll = tk.Scrollbar(results_frame)
+        results_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        results_text = tk.Text(results_frame, wrap=tk.WORD,
+                              bg=theme['bg'], fg=theme['fg'],
+                              font=("Consolas", 9), padx=10, pady=10,
+                              yscrollcommand=results_scroll.set)
+        results_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        results_scroll.config(command=results_text.yview)
+        
+        # Configure tags
+        results_text.tag_configure("file", foreground="#4488ff", font=("Consolas", 9, "bold"))
+        results_text.tag_configure("match", foreground="#00ff88")
+        results_text.tag_configure("line", foreground="#888888")
+        
+        def perform_search():
+            query = search_entry.get().strip().lower()
+            if not query:
+                return
+            
+            results_text.delete("1.0", tk.END)
+            results_text.insert("1.0", f"Searching for: '{query}'...\n\n")
+            
+            search_filter = search_type.get()
+            matches = []
+            
+            # Search through indexed files
+            for file_path, data in self.workspace_index.items():
+                file_matches = []
+                
+                if search_filter in ["all", "functions"]:
+                    for func in data['functions']:
+                        if query in func['name'].lower():
+                            file_matches.append(('function', func['name'], func['line']))
+                
+                if search_filter in ["all", "classes"]:
+                    for cls in data['classes']:
+                        if query in cls['name'].lower():
+                            file_matches.append(('class', cls['name'], cls['line']))
+                
+                if search_filter == "all":
+                    # Search in content
+                    for line_num, line in enumerate(data['content'].split('\n'), 1):
+                        if query in line.lower():
+                            file_matches.append(('content', line.strip(), line_num))
+                
+                if file_matches:
+                    matches.append((data['rel_path'], file_matches))
+            
+            # Display results
+            results_text.delete("1.0", tk.END)
+            
+            if not matches:
+                results_text.insert("1.0", f"No results found for '{query}'")
+            else:
+                results_text.insert("1.0", f"Found {sum(len(m[1]) for m in matches)} matches in {len(matches)} files:\n\n")
+                
+                for file_path, file_matches in matches:
+                    results_text.insert(tk.END, f"📄 {file_path}\n", "file")
+                    
+                    # Limit matches per file
+                    for match_type, content, line_num in file_matches[:10]:
+                        if match_type == 'function':
+                            results_text.insert(tk.END, f"  ⚡ Function: ", "line")
+                            results_text.insert(tk.END, f"{content}", "match")
+                            results_text.insert(tk.END, f" (line {line_num})\n", "line")
+                        elif match_type == 'class':
+                            results_text.insert(tk.END, f"  🏗️ Class: ", "line")
+                            results_text.insert(tk.END, f"{content}", "match")
+                            results_text.insert(tk.END, f" (line {line_num})\n", "line")
+                        else:
+                            results_text.insert(tk.END, f"  {line_num}: ", "line")
+                            results_text.insert(tk.END, f"{content[:80]}\n", "match")
+                    
+                    if len(file_matches) > 10:
+                        results_text.insert(tk.END, f"  ... and {len(file_matches) - 10} more\n", "line")
+                    
+                    results_text.insert(tk.END, "\n")
+        
+        # Search button
+        btn_frame = tk.Frame(dialog, bg=theme['bg'])
+        btn_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        tk.Button(btn_frame, text="Search", command=perform_search,
+                 bg="#0078d4", fg="white", font=("Arial", 9, "bold"),
+                 padx=20, pady=5).pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(btn_frame, text="Close", command=dialog.destroy,
+                 bg=theme['button_bg'], fg=theme['fg'],
+                 padx=20, pady=5).pack(side=tk.RIGHT, padx=5)
+        
+        # Bind Enter to search
+        search_entry.bind("<Return>", lambda e: perform_search())
+    
+    def find_similar_code(self):
+        """Find similar code patterns in workspace"""
+        if not self.workspace_index:
+            messagebox.showwarning("Workspace Not Indexed", "Please index the workspace first (Project > Index Workspace)")
+            return
+        
+        tab_info = self.get_current_tab_info()
+        if not tab_info:
+            return
+        
+        text_widget = tab_info['text_widget']
+        
+        # Get selected code
+        try:
+            selected_code = text_widget.get(tk.SEL_FIRST, tk.SEL_LAST).strip()
+        except:
+            messagebox.showwarning("No Selection", "Please select code to find similar patterns.")
+            return
+        
+        if not selected_code:
+            return
+        
+        theme = self.themes[self.current_theme]
+        
+        # Create results dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Similar Code Patterns")
+        dialog.geometry("700x500")
+        dialog.configure(bg=theme['bg'])
+        
+        # Title
+        tk.Label(dialog, text="🔍 Finding Similar Code Patterns...",
+                bg=theme['bg'], fg=theme['fg'],
+                font=("Arial", 11, "bold"), pady=10).pack()
+        
+        # Results
+        results_frame = tk.Frame(dialog, bg=theme['bg'])
+        results_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        results_scroll = tk.Scrollbar(results_frame)
+        results_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        results_text = tk.Text(results_frame, wrap=tk.WORD,
+                              bg=theme['line_num_bg'], fg=theme['fg'],
+                              font=("Consolas", 9), padx=10, pady=10,
+                              yscrollcommand=results_scroll.set)
+        results_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        results_scroll.config(command=results_text.yview)
+        
+        # Simple similarity search
+        def search_similar():
+            results_text.insert("1.0", "Searching workspace...\n\n")
+            
+            # Extract key tokens from selected code
+            tokens = set(re.findall(r'\b\w+\b', selected_code.lower()))
+            tokens = tokens - {'def', 'class', 'if', 'else', 'for', 'while', 'return', 'import', 'from'}
+            
+            similar_matches = []
+            
+            for file_path, data in self.workspace_index.items():
+                # Check for similar token patterns
+                file_tokens = set(re.findall(r'\b\w+\b', data['content'].lower()))
+                overlap = tokens & file_tokens
+                
+                if len(overlap) >= max(3, len(tokens) * 0.5):
+                    similarity = len(overlap) / len(tokens) if tokens else 0
+                    similar_matches.append((data['rel_path'], similarity, file_path))
+            
+            # Sort by similarity
+            similar_matches.sort(key=lambda x: x[1], reverse=True)
+            
+            results_text.delete("1.0", tk.END)
+            
+            if similar_matches:
+                results_text.insert("1.0", f"Found {len(similar_matches)} files with similar code:\n\n")
+                
+                for rel_path, similarity, full_path in similar_matches[:10]:
+                    results_text.insert(tk.END, f"📄 {rel_path}\n")
+                    results_text.insert(tk.END, f"   Similarity: {similarity*100:.1f}%\n\n")
+            else:
+                results_text.insert("1.0", "No similar code patterns found.")
+        
+        # Run search
+        thread = threading.Thread(target=search_similar, daemon=True)
+        thread.start()
+        
+        # Close button
+        tk.Button(dialog, text="Close", command=dialog.destroy,
+                 bg=theme['button_bg'], fg=theme['fg'],
+                 padx=20, pady=5).pack(pady=10)
+    
+    def show_project_overview(self):
+        """Show comprehensive project overview"""
+        if not self.workspace_index:
+            response = messagebox.askyesno(
+                "Workspace Not Indexed",
+                "Workspace needs to be indexed first. Index now?"
+            )
+            if response:
+                self.index_workspace()
+            return
+        
+        theme = self.themes[self.current_theme]
+        
+        # Create overview panel in AI panel
+        if self.ai_explanation_panel is None:
+            self.ai_explanation_panel = tk.Frame(self.main_right_pane, bg=theme['bg'], width=400)
+            self.main_right_pane.add(self.ai_explanation_panel, minsize=350)
+            self.ai_panel_visible = True
+            
+            title_frame = tk.Frame(self.ai_explanation_panel, bg=theme['toolbar_bg'], height=35)
+            title_frame.pack(side=tk.TOP, fill=tk.X)
+            
+            tk.Label(title_frame, text="✨ AI Assistant", 
+                    bg=theme['toolbar_bg'], fg=theme['fg'],
+                    font=("Arial", 10, "bold"), padx=10).pack(side=tk.LEFT, pady=5)
+            
+            close_btn = tk.Button(title_frame, text="✕", 
+                                 command=self.hide_ai_panel,
+                                 bg=theme['toolbar_bg'], fg=theme['fg'],
+                                 relief=tk.FLAT, padx=8, font=("Arial", 12, "bold"))
+            close_btn.pack(side=tk.RIGHT, padx=5)
+            
+            self.ai_content_frame = tk.Frame(self.ai_explanation_panel, bg=theme['bg'])
+            self.ai_content_frame.pack(fill=tk.BOTH, expand=True)
+        
+        elif not self.ai_panel_visible:
+            self.main_right_pane.add(self.ai_explanation_panel, minsize=350)
+            self.ai_panel_visible = True
+        
+        # Clear previous content
+        for widget in self.ai_content_frame.winfo_children():
+            widget.destroy()
+        
+        # Create overview UI
+        tk.Label(self.ai_content_frame, text="📊 Project Overview",
+                bg=theme['bg'], fg=theme['fg'],
+                font=("Arial", 12, "bold"), pady=10).pack()
+        
+        # Scrollable content
+        scroll_frame = tk.Frame(self.ai_content_frame, bg=theme['bg'])
+        scroll_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        scrollbar = tk.Scrollbar(scroll_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        overview_text = tk.Text(scroll_frame, wrap=tk.WORD,
+                               bg=theme['bg'], fg=theme['fg'],
+                               font=("Arial", 10), padx=10, pady=10,
+                               yscrollcommand=scrollbar.set)
+        overview_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=overview_text.yview)
+        
+        # Calculate statistics
+        total_files = len(self.workspace_index)
+        total_lines = sum(data['lines'] for data in self.workspace_index.values())
+        total_functions = sum(len(data['functions']) for data in self.workspace_index.values())
+        total_classes = sum(len(data['classes']) for data in self.workspace_index.values())
+        total_size = sum(data['size'] for data in self.workspace_index.values())
+        
+        # Top files by size
+        largest_files = sorted(self.workspace_index.values(), 
+                              key=lambda x: x['size'], reverse=True)[:5]
+        
+        # Most complex files (by function count)
+        complex_files = sorted(self.workspace_index.values(),
+                              key=lambda x: len(x['functions']), reverse=True)[:5]
+        
+        # Build overview
+        overview = f"""📁 PROJECT STATISTICS
+
+✓ Total Files: {total_files}
+✓ Total Lines: {total_lines:,}
+✓ Total Functions: {total_functions}
+✓ Total Classes: {total_classes}
+✓ Total Size: {total_size:,} bytes
+
+📊 LARGEST FILES:
+"""
+        for data in largest_files:
+            overview += f"  • {data['rel_path']} ({data['lines']} lines)\n"
+        
+        overview += "\n🔧 MOST COMPLEX FILES:\n"
+        for data in complex_files:
+            overview += f"  • {data['rel_path']} ({len(data['functions'])} functions)\n"
+        
+        overview += "\n📦 COMMON IMPORTS:\n"
+        all_imports = {}
+        for data in self.workspace_index.values():
+            for imp in data['imports']:
+                module = imp.split()[1].split('.')[0] if len(imp.split()) > 1 else ''
+                all_imports[module] = all_imports.get(module, 0) + 1
+        
+        top_imports = sorted(all_imports.items(), key=lambda x: x[1], reverse=True)[:10]
+        for module, count in top_imports:
+            if module:
+                overview += f"  • {module} ({count} files)\n"
+        
+        overview_text.insert("1.0", overview)
+        overview_text.config(state='disabled')
+    
+    def analyze_dependencies(self):
+        """Analyze project dependencies and imports"""
+        if not self.workspace_index:
+            messagebox.showwarning("Workspace Not Indexed", "Please index the workspace first.")
+            return
+        
+        messagebox.showinfo(
+            "Dependency Analysis",
+            f"Found {len(self.workspace_index)} Python files.\n\n"
+            "Detailed dependency graph and analysis will be fully implemented soon!"
+        )
 
 def main():
     root = tk.Tk()
