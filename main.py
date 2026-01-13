@@ -3103,7 +3103,7 @@ Ctrl+W         Close Current Tab
         def get_response():
             try:
                 # Prepare conversation context
-                from .prompt_templates import PromptTemplates
+                from utils.prompt_templates import PromptTemplates
                 
                 # Get file context if available
                 tab_info = self.get_current_tab_info()
